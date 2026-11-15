@@ -271,6 +271,20 @@ fn unknown_subcommand_is_usage_failure_with_exit_code_one() {
 }
 
 #[test]
+fn usage_error_keeps_clap_line_breaks_on_stderr() {
+    let directory = tempfile::tempdir().unwrap();
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["profile", "nonsense"])
+        .assert()
+        .code(1);
+
+    let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).into_owned();
+    assert!(stderr.lines().count() > 1, "stderr: {stderr}");
+    assert!(!stderr.contains("??"), "stderr: {stderr}");
+}
+
+#[test]
 fn help_exits_zero_and_prints_to_stdout() {
     Command::cargo_bin("kafcli")
         .unwrap()
