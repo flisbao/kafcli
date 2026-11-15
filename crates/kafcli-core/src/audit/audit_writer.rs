@@ -1,10 +1,16 @@
 use super::audit_record::AuditRecord;
 use crate::error::{CoreError, CoreResult};
-use std::fs::OpenOptions;
+use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const AUDIT_LOG_FILE_NAME: &str = "audit.log";
+
+/// Owner-only access on unix: the log records what was run against which profile.
+#[cfg(unix)]
+const AUDIT_DIRECTORY_MODE: u32 = 0o700;
+#[cfg(unix)]
+const AUDIT_FILE_MODE: u32 = 0o600;
 
 /// Appends audit records somewhere durable. The binary decides the destination.
 pub trait AuditWriter {
@@ -26,19 +32,38 @@ impl JsonLinesAuditWriter {
 
 impl AuditWriter for JsonLinesAuditWriter {
     /// Creates the directory if needed, then appends the record as one line in a single write.
+    ///
+    /// On unix the directory and a newly created file are private to the owner (0700 and 0600).
+    /// The data is flushed to disk before returning.
     fn append_record(&self, record: &AuditRecord) -> CoreResult<()> {
         if let Some(directory) = self.log_path.parent() {
-            std::fs::create_dir_all(directory)?;
+            create_audit_directory(directory)?;
         }
         let mut line = serde_json::to_string(record).map_err(serialization_error)?;
         line.push('\n');
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)?;
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(AUDIT_FILE_MODE);
+        }
+        let mut file = options.open(&self.log_path)?;
         file.write_all(line.as_bytes())?;
+        file.sync_all()?;
         Ok(())
     }
+}
+
+fn create_audit_directory(directory: &Path) -> std::io::Result<()> {
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(AUDIT_DIRECTORY_MODE);
+    }
+    builder.create(directory)
 }
 
 fn serialization_error(error: serde_json::Error) -> CoreError {
@@ -73,6 +98,32 @@ mod tests {
             assert!(value.get("outcome").is_some());
             assert!(value.get("timestamp").is_some());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creates_log_file_and_directory_private_to_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let state_directory = root.path().join("kafcli");
+        let writer = JsonLinesAuditWriter::in_directory(&state_directory);
+
+        writer
+            .append_record(&sample_record(AuditOutcome::Executed))
+            .unwrap();
+
+        let directory_mode = std::fs::metadata(&state_directory)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(state_directory.join(AUDIT_LOG_FILE_NAME))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(directory_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 
     #[test]
