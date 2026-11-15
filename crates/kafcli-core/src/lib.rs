@@ -6,4 +6,5 @@ pub mod auth;
 pub mod config;
 pub mod connection;
 pub mod error;
+pub mod guard;
 pub mod secret;
