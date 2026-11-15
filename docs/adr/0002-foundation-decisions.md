@@ -20,7 +20,7 @@ A `0001` está reservada ao spike do Event Hubs.
 ### Configuração
 
 - Precedência: flags de linha de comando > arquivo TOML > variáveis `KAFCLI_*`.
-- O arquivo TOML é lido uma única vez com `toml` 1.x e alimentado ao figment via `Serialized`. O parser TOML do próprio figment (0.8) ecoava linhas do arquivo nas mensagens de erro, o que podia vazar segredos. Erros de configuração descrevem a posição do problema, nunca repetem o valor.
+- O arquivo TOML é lido uma única vez com `toml` 1.x e alimentado ao figment via `Serialized`. O parser TOML interno do figment (toml 0.8) ecoava linhas do arquivo nas mensagens de erro, o que podia vazar segredos. Erros de configuração descrevem a posição do problema, nunca repetem o valor.
 - `Profile` usa `deny_unknown_fields`: um erro de digitação como `protectd` desabilitaria a proteção em silêncio, então deve falhar ao carregar. `Configuration` não usa `deny_unknown_fields`: variáveis `KAFCLI_*` soltas no ambiente não podem quebrar o carregamento.
 - Caminho padrão: `dirs::config_dir()/kafcli/config.toml`, com override por `--config` ou `KAFCLI_CONFIG`.
 - Referências de segredo aceitas: `env:VAR`, `file:/caminho` e `keyring:serviço/conta`. O TOML nunca guarda segredo em claro.
@@ -69,7 +69,8 @@ A `0001` está reservada ao spike do Event Hubs.
 
 ## Consequências
 
-- O build musl depende de um toolchain C para musl. O `ssl-vendored` compila OpenSSL a partir do fonte, e esse passo precisa de `x86_64-linux-musl-gcc` (pacote `musl-tools` no Ubuntu).
+- O build musl depende de um toolchain C para musl. O `ssl-vendored` compila OpenSSL a partir do fonte e precisa de um compilador C para musl. O pacote `musl-tools` no Ubuntu fornece o wrapper `musl-gcc`, e o workflow aponta `CC_x86_64_unknown_linux_musl` para ele.
+- O librdkafka também é configurado com CMake, e o projeto habilita a linguagem C++. O `musl-tools` não fornece um compilador C++ para musl, então o workflow aponta `CXX_x86_64_unknown_linux_musl` para o `g++` do host. O wrapper C++ (`rdkafka++`) é compilado mas não é linkado no kafcli, então o `g++` do host só precisa passar pela configuração e compilar objetos não usados.
 - **Build musl verificado apenas em CI.** Na máquina de desenvolvimento, `cargo build --release --target x86_64-unknown-linux-musl -p kafcli` falhou na compilação do OpenSSL vendorizado com `/bin/sh: 1: x86_64-linux-musl-gcc: not found` seguido de `Error building OpenSSL`. O `musl-gcc` não está instalado nessa máquina e não foi instalado, por decisão do controlador. O target musl está instalado no rustup, então o problema é só o toolchain C. A verificação de link estático fica por conta do job `release-build.yml` em `ubuntu-latest`, que instala `musl-tools`. Caso o job falhe, a causa mais provável é a mesma ausência de toolchain.
 - O guard de perfis `protected` é mais rígido que o esperado por quem usa `--yes` em scripts. Operações destrutivas exigem terminal interativo. Automação que precisa apagar em perfil protegido deve ser tratada em plano futuro, com decisão explícita.
 - `profile add` e `profile use` apagam comentários do TOML. Usuários que comentam o arquivo devem saber disso.
