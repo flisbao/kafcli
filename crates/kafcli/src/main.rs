@@ -12,6 +12,8 @@ use cli::profile_arguments::ProfileCommand;
 use commands::profile::{add_profile, list_profiles, show_profile, test_profile, use_profile};
 use execution_context::ExecutionContext;
 use exit_code::resolve_exit_code;
+use kafcli_core::secret::composite_resolver::CompositeSecretResolver;
+use kafcli_core::secret::resolver::SecretResolver;
 use output::renderer::render_output;
 use std::io::{self, ErrorKind, Write};
 use std::process::ExitCode;
@@ -20,7 +22,8 @@ use std::time::Duration;
 fn main() -> ExitCode {
     let arguments = CommandLineArguments::parse();
     logging::initialize_logging(arguments.global.verbosity);
-    match run(arguments) {
+    let resolver = CompositeSecretResolver::with_default_sources();
+    match run(arguments, &resolver) {
         Ok(rendered) => write_result_to_stdout(&rendered),
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -41,7 +44,7 @@ fn write_result_to_stdout(rendered: &str) -> ExitCode {
     }
 }
 
-fn run(arguments: CommandLineArguments) -> anyhow::Result<String> {
+fn run(arguments: CommandLineArguments, resolver: &dyn SecretResolver) -> anyhow::Result<String> {
     let output_format = arguments.global.output;
     let context = ExecutionContext::from_global_arguments(arguments.global)?;
     let rendered = match arguments.command {
@@ -62,7 +65,7 @@ fn run(arguments: CommandLineArguments) -> anyhow::Result<String> {
             } => {
                 let timeout = Duration::from_secs(timeout_seconds);
                 render_output(
-                    &test_profile(&context, name.as_deref(), timeout)?,
+                    &test_profile(&context, resolver, name.as_deref(), timeout)?,
                     output_format,
                 )?
             }
