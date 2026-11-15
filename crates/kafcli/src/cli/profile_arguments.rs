@@ -31,8 +31,8 @@ pub enum ProfileCommand {
     Test {
         /// Profile name; defaults to the selected profile
         name: Option<String>,
-        /// Seconds to wait for the broker before giving up
-        #[arg(long, default_value_t = 10)]
+        /// Seconds to wait for the broker before giving up (1 to 3600)
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=3600))]
         timeout_seconds: u64,
     },
 }

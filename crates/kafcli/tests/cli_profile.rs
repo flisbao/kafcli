@@ -258,3 +258,35 @@ fn use_does_not_persist_environment_defaults() {
     );
     assert!(!written.contains("prd"), "written: {written}");
 }
+
+#[test]
+fn unknown_subcommand_is_usage_failure_with_exit_code_one() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["profile", "nonsense"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+}
+
+#[test]
+fn help_exits_zero_and_prints_to_stdout() {
+    Command::cargo_bin("kafcli")
+        .unwrap()
+        .args(["profile", "add", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--auth-type"));
+}
+
+#[test]
+fn test_rejects_zero_timeout_seconds() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["profile", "test", "--timeout-seconds", "0"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("not in 1..=3600"));
+}
