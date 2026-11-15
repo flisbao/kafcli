@@ -1,6 +1,6 @@
 use super::client_properties::ClientProperties;
 use super::provider::AuthProvider;
-use super::tls_settings::apply_tls_settings;
+use super::sasl_settings::apply_sasl_settings;
 use crate::config::model::SaslCredentialsConfig;
 use crate::error::CoreResult;
 use crate::secret::resolver::SecretResolver;
@@ -41,20 +41,12 @@ impl AuthProvider for SaslScramAuthProvider {
         resolver: &dyn SecretResolver,
     ) -> CoreResult<ClientProperties> {
         let mut properties = ClientProperties::default();
-        let security_protocol = if self.config.use_tls {
-            "SASL_SSL"
-        } else {
-            "SASL_PLAINTEXT"
-        };
-        apply_tls_settings(
+        apply_sasl_settings(
             &mut properties,
-            security_protocol,
-            self.config.ca_location.as_deref(),
-        );
-        properties.set_plain("sasl.mechanism", self.mechanism.sasl_mechanism_name());
-        properties.set_plain("sasl.username", self.config.username.as_str());
-        let password = resolver.resolve_secret(&self.config.secret_ref)?;
-        properties.set_secret("sasl.password", password);
+            &self.config,
+            self.mechanism.sasl_mechanism_name(),
+            resolver,
+        )?;
         Ok(properties)
     }
 

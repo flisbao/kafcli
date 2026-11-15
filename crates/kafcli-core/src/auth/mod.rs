@@ -6,5 +6,6 @@ pub mod provider;
 pub mod provider_factory;
 pub mod sasl_plain_provider;
 pub mod sasl_scram_provider;
+pub mod sasl_settings;
 pub mod tls_provider;
 pub mod tls_settings;

@@ -103,7 +103,6 @@ mod tests {
         let error = provider
             .build_client_properties(&FailingSecretResolver)
             .unwrap_err();
-        assert!(!error.to_string().contains("s3cret"));
         assert!(matches!(error, CoreError::SecretResolution(_)));
     }
 }

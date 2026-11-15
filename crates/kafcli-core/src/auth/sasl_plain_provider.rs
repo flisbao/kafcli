@@ -1,6 +1,6 @@
 use super::client_properties::ClientProperties;
 use super::provider::AuthProvider;
-use super::tls_settings::apply_tls_settings;
+use super::sasl_settings::apply_sasl_settings;
 use crate::config::model::SaslCredentialsConfig;
 use crate::error::CoreResult;
 use crate::secret::resolver::SecretResolver;
@@ -23,20 +23,7 @@ impl AuthProvider for SaslPlainAuthProvider {
         resolver: &dyn SecretResolver,
     ) -> CoreResult<ClientProperties> {
         let mut properties = ClientProperties::default();
-        let security_protocol = if self.config.use_tls {
-            "SASL_SSL"
-        } else {
-            "SASL_PLAINTEXT"
-        };
-        apply_tls_settings(
-            &mut properties,
-            security_protocol,
-            self.config.ca_location.as_deref(),
-        );
-        properties.set_plain("sasl.mechanism", "PLAIN");
-        properties.set_plain("sasl.username", self.config.username.as_str());
-        let password = resolver.resolve_secret(&self.config.secret_ref)?;
-        properties.set_secret("sasl.password", password);
+        apply_sasl_settings(&mut properties, &self.config, "PLAIN", resolver)?;
         Ok(properties)
     }
 
@@ -69,5 +56,26 @@ mod tests {
         assert_eq!(properties.plain_value("sasl.username"), Some("app"));
         assert!(properties.is_secret("sasl.password"));
         assert_eq!(provider.describe_principal(), Some("app".to_string()));
+    }
+
+    #[test]
+    fn uses_sasl_plaintext_when_tls_disabled() {
+        let provider = SaslPlainAuthProvider::new(SaslCredentialsConfig {
+            username: "app".into(),
+            secret_ref: "env:KAFKA_PASSWORD".parse().unwrap(),
+            ca_location: None,
+            use_tls: false,
+        });
+        let properties = provider
+            .build_client_properties(&FixedSecretResolver::returning("s3cret"))
+            .unwrap();
+        assert_eq!(
+            properties.plain_value("security.protocol"),
+            Some("SASL_PLAINTEXT")
+        );
+        assert_eq!(
+            properties.plain_value("ssl.endpoint.identification.algorithm"),
+            None
+        );
     }
 }
