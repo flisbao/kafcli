@@ -1,4 +1,5 @@
 use crate::output::renderer::TableRenderable;
+use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
 use kafcli_core::config::model::Profile;
@@ -61,19 +62,31 @@ impl TableRenderable for ProfileListView {
 impl TableRenderable for ProfileDetailView {
     fn render_table(&self) -> String {
         let mut table = build_table(&["FIELD", "VALUE"]);
-        table.add_row(vec![Cell::new("name"), Cell::new(&self.name)]);
+        table.add_row(vec![
+            Cell::new("name"),
+            Cell::new(sanitize_for_terminal(&self.name)),
+        ]);
         table.add_row(vec![
             Cell::new("brokers"),
-            Cell::new(self.brokers.join(", ")),
+            Cell::new(sanitize_for_terminal(&self.brokers.join(", "))),
         ]);
-        table.add_row(vec![Cell::new("auth_type"), Cell::new(&self.auth_type)]);
+        table.add_row(vec![
+            Cell::new("auth_type"),
+            Cell::new(sanitize_for_terminal(&self.auth_type)),
+        ]);
         table.add_row(vec![
             Cell::new("principal"),
-            Cell::new(self.principal.as_deref().unwrap_or("-")),
+            Cell::new(
+                self.principal
+                    .as_deref()
+                    .map_or("-".to_string(), sanitize_for_terminal),
+            ),
         ]);
         table.add_row(vec![
             Cell::new("secret_references"),
-            Cell::new(join_or_dash(&self.secret_references)),
+            Cell::new(sanitize_for_terminal(&join_or_dash(
+                &self.secret_references,
+            ))),
         ]);
         table.add_row(vec![Cell::new("protected"), Cell::new(self.protected)]);
         table.add_row(vec![
@@ -88,9 +101,9 @@ fn build_summary_table<'a>(summaries: impl IntoIterator<Item = &'a ProfileSummar
     let mut table = build_table(&["NAME", "BROKERS", "AUTH", "PROTECTED", "DEFAULT"]);
     for summary in summaries {
         table.add_row(vec![
-            Cell::new(&summary.name),
-            Cell::new(summary.brokers.join(", ")),
-            Cell::new(&summary.auth_type),
+            Cell::new(sanitize_for_terminal(&summary.name)),
+            Cell::new(sanitize_for_terminal(&summary.brokers.join(", "))),
+            Cell::new(sanitize_for_terminal(&summary.auth_type)),
             Cell::new(summary.protected),
             Cell::new(summary.is_default),
         ]);
@@ -110,5 +123,29 @@ fn join_or_dash(values: &[String]) -> String {
         "-".to_string()
     } else {
         values.join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_list_neutralizes_terminal_control_characters() {
+        let view = ProfileListView {
+            profiles: vec![ProfileSummary {
+                name: "\x1b[2Jdev".to_string(),
+                brokers: vec!["broker\u{9b}31m:9092".to_string()],
+                auth_type: "none".to_string(),
+                protected: false,
+                is_default: true,
+            }],
+        };
+
+        let rendered = view.render_table();
+
+        assert!(!rendered.chars().any(|character| character == '\x1b'));
+        assert!(!rendered.contains('\u{9b}'));
+        assert!(rendered.contains("?[2Jdev"));
     }
 }

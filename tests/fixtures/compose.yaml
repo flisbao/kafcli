@@ -66,6 +66,20 @@ services:
     healthcheck:
       disable: true
 
+  # Gate for `up --wait`: finishes only after the bootstrap succeeded and SASL is enabled, so the
+  # SCRAM tests never run before the user exists.
+  redpanda-scram-ready:
+    <<: *redpanda
+    restart: "no"
+    depends_on:
+      redpanda-scram-bootstrap:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - rpk -X admin.hosts=redpanda-scram:9644 cluster config get enable_sasl | grep -qx true
+    healthcheck:
+      disable: true
+
   redpanda-mtls:
     <<: *redpanda
     command:

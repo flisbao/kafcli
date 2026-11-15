@@ -119,14 +119,24 @@ fn rejects_wrong_scram_password() {
         ],
     );
 
-    let started = Instant::now();
+    // Positive control: the same profile succeeds with the right password, so a later failure
+    // is caused by the password and not by fixtures that are down or on another port.
     build_kafcli_command(directory.path())
+        .env(SCRAM_PASSWORD_VARIABLE, SCRAM_PASSWORD)
+        .args(["profile", "test", "scram", "--timeout-seconds", "5"])
+        .assert()
+        .success();
+
+    let started = Instant::now();
+    let assertion = build_kafcli_command(directory.path())
         .env(SCRAM_PASSWORD_VARIABLE, "wrong-password")
         .args(["profile", "test", "scram", "--timeout-seconds", "5"])
         .assert()
         .code(1);
 
     assert!(started.elapsed() < Duration::from_secs(30));
+    let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
+    assert!(stderr.starts_with("error: kafka error"), "stderr: {stderr}");
 }
 
 #[test]
@@ -181,16 +191,20 @@ fn never_leaks_secret_in_any_output() {
         ],
     );
 
+    // Output is checked for leaks before the exit code, so a leak is reported even when the run fails.
     let assertion = build_kafcli_command(directory.path())
         .env(SCRAM_PASSWORD_VARIABLE, SCRAM_PASSWORD)
         .args(["-vv", "--output", "json", "profile", "test", "scram"])
-        .assert()
-        .success();
+        .assert();
 
     let mut captured = assertion.get_output().stdout.clone();
     captured.extend_from_slice(&assertion.get_output().stderr);
+    // `profile test` writes no audit log today, so this state-dir scan is a forward guard that
+    // starts to matter once an audit writer exists.
     captured.extend_from_slice(&read_all_files(&directory.path().join("state")));
     assert!(!String::from_utf8_lossy(&captured).contains(SCRAM_PASSWORD));
+
+    assertion.success();
 }
 
 /// Concatenates every file below `directory` (the audit log, if any); a missing directory is empty.
