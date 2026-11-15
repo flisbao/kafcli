@@ -2,7 +2,7 @@ use crate::cli::profile_arguments::{AddProfileArguments, AuthTypeArgument};
 use crate::execution_context::ExecutionContext;
 use crate::output::profile_views::ProfileSummary;
 use anyhow::{Context, anyhow, bail};
-use kafcli_core::config::loader::load_configuration;
+use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
     AuthConfig, AzureConnectionStringConfig, MutualTlsAuthConfig, Profile, SaslCredentialsConfig,
     TlsAuthConfig,
@@ -16,7 +16,7 @@ pub fn add_profile(
     context: &ExecutionContext,
     arguments: &AddProfileArguments,
 ) -> anyhow::Result<ProfileSummary> {
-    let mut configuration = load_configuration(&context.config_path)?;
+    let mut configuration = load_configuration_file_only(&context.config_path)?;
     if configuration.profiles.contains_key(&arguments.name) && !arguments.force {
         bail!(
             "profile '{}' already exists; pass --force to replace it",

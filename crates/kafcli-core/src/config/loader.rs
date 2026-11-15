@@ -17,11 +17,7 @@ const MAXIMUM_CONFIGURATION_BYTES: u64 = 1024 * 1024;
 /// A missing file yields an empty configuration (environment variables still apply).
 /// Values in the file take precedence over environment variables.
 pub fn load_configuration(config_path: &Path) -> CoreResult<Configuration> {
-    let file_source = read_configuration_source(config_path)?;
-    let file_table: toml::Table = toml::from_str(&file_source).map_err(|error| {
-        CoreError::Configuration(describe_toml_syntax_error(&error, &file_source))
-    })?;
-
+    let file_table = read_configuration_table(config_path)?;
     Figment::new()
         .merge(
             Env::prefixed(ENVIRONMENT_PREFIX)
@@ -33,10 +29,27 @@ pub fn load_configuration(config_path: &Path) -> CoreResult<Configuration> {
         .map_err(|error| CoreError::Configuration(describe_figment_error(&error)))
 }
 
-/// Reads the file with an explicit size limit; a missing file reads as empty text.
+/// Loads only the values written in the file, ignoring `KAFCLI_*` environment variables.
 ///
-/// The text is parsed exactly once, by the `toml` crate, so no other TOML parser (and no
-/// parser message echoing source lines) is involved.
+/// Read-modify-write commands must use this: merging the environment would persist values the
+/// operator never wrote into the file.
+pub fn load_configuration_file_only(config_path: &Path) -> CoreResult<Configuration> {
+    let file_table = read_configuration_table(config_path)?;
+    Figment::new()
+        .merge(Serialized::defaults(file_table))
+        .extract()
+        .map_err(|error| CoreError::Configuration(describe_figment_error(&error)))
+}
+
+/// Parses the file once with the `toml` crate, so no other TOML parser (and no parser message
+/// echoing source lines) is involved.
+fn read_configuration_table(config_path: &Path) -> CoreResult<toml::Table> {
+    let file_source = read_configuration_source(config_path)?;
+    toml::from_str(&file_source)
+        .map_err(|error| CoreError::Configuration(describe_toml_syntax_error(&error, &file_source)))
+}
+
+/// Reads the file with an explicit size limit; a missing file reads as empty text.
 fn read_configuration_source(config_path: &Path) -> CoreResult<String> {
     let file = match File::open(config_path) {
         Ok(file) => file,
@@ -180,6 +193,21 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
                     .default_profile
                     .as_deref(),
                 Some("from-file")
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn file_only_load_ignores_environment() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("KAFCLI_DEFAULT_PROFILE", "from-env");
+            jail.create_file("config.toml", "")?;
+            assert_eq!(
+                load_configuration_file_only(Path::new("config.toml"))
+                    .unwrap()
+                    .default_profile,
+                None
             );
             Ok(())
         });

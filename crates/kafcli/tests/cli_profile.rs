@@ -221,3 +221,40 @@ fn test_against_unreachable_broker_fails_fast() {
     let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
     assert!(stderr.starts_with("error: kafka error"), "stderr: {stderr}");
 }
+
+#[test]
+fn add_does_not_persist_environment_defaults() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.toml");
+
+    build_kafcli_command(directory.path())
+        .env("KAFCLI_DEFAULT_PROFILE", "prd")
+        .args(["profile", "add", "dev", "--brokers", "localhost:9092"])
+        .args(["--auth-type", "none"])
+        .assert()
+        .success();
+
+    let written = std::fs::read_to_string(config_path).unwrap();
+    assert!(!written.contains("default_profile"), "written: {written}");
+}
+
+#[test]
+fn use_does_not_persist_environment_defaults() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.toml");
+    add_plaintext_profile(directory.path(), "dev", &[]);
+    add_plaintext_profile(directory.path(), "local", &[]);
+
+    build_kafcli_command(directory.path())
+        .env("KAFCLI_DEFAULT_PROFILE", "prd")
+        .args(["profile", "use", "local"])
+        .assert()
+        .success();
+
+    let written = std::fs::read_to_string(config_path).unwrap();
+    assert!(
+        written.contains("default_profile = \"local\""),
+        "written: {written}"
+    );
+    assert!(!written.contains("prd"), "written: {written}");
+}
