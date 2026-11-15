@@ -31,17 +31,9 @@ pub struct GlobalArguments {
     pub config: Option<PathBuf>,
     /// Broker addresses that override the profile's brokers.
     #[arg(long, global = true, value_delimiter = ',')]
-    #[allow(
-        dead_code,
-        reason = "read by the connection commands added in a later plan"
-    )]
     pub brokers: Option<Vec<String>>,
     /// Allows TLS settings that a profile would otherwise refuse.
     #[arg(long, global = true)]
-    #[allow(
-        dead_code,
-        reason = "read by the connection commands added in a later plan"
-    )]
     pub insecure: bool,
 }
 

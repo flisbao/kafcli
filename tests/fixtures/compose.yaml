@@ -1,0 +1,184 @@
+# Redpanda brokers for the kafcli integration tests (see README.md).
+#
+#   redpanda-plaintext  localhost:19092  no authentication
+#   redpanda-scram      localhost:29092  SASL_PLAINTEXT, SCRAM-SHA-256, user kafcli
+#   redpanda-mtls       localhost:39092  TLS with mandatory client certificates
+#
+# Each broker exposes its admin API on its own host port (19644, 29644, 39644).
+# The certificates for redpanda-mtls come from generate-certificates.sh.
+name: kafcli-fixtures
+
+x-redpanda: &redpanda
+  image: docker.redpanda.com/redpandadata/redpanda:v25.3.18
+  # The image entrypoint runs `rpk` with a read-only config mount, which rpk cannot rewrite,
+  # so the broker config is copied into the data directory first.
+  entrypoint: ["/bin/bash", "-c"]
+  healthcheck:
+    test: ["CMD-SHELL", "rpk -X admin.hosts=localhost:9644 cluster health | grep -q 'Healthy:.*true'"]
+    interval: 2s
+    timeout: 5s
+    retries: 60
+    start_period: 5s
+
+services:
+  redpanda-plaintext:
+    <<: *redpanda
+    command:
+      - >-
+        cp /fixtures/redpanda.yaml /var/lib/redpanda/redpanda.yaml &&
+        exec rpk redpanda start --mode dev-container --smp 1 --config /var/lib/redpanda/redpanda.yaml
+    configs:
+      - source: plaintext-broker-config
+        target: /fixtures/redpanda.yaml
+    ports:
+      - "19092:19092"
+      - "19644:9644"
+
+  redpanda-scram:
+    <<: *redpanda
+    command:
+      - >-
+        cp /fixtures/redpanda.yaml /var/lib/redpanda/redpanda.yaml &&
+        exec rpk redpanda start --mode dev-container --smp 1 --config /var/lib/redpanda/redpanda.yaml
+    configs:
+      - source: scram-broker-config
+        target: /fixtures/redpanda.yaml
+    ports:
+      - "29092:29092"
+      - "29644:9644"
+
+  # Creates the SCRAM user and turns SASL on once the broker answers its admin API.
+  redpanda-scram-bootstrap:
+    <<: *redpanda
+    restart: "no"
+    depends_on:
+      redpanda-scram:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    environment:
+      KAFCLI_IT_SCRAM_PASSWORD: kafcli-it-scram-secret
+    command:
+      - >-
+        rpk -X admin.hosts=redpanda-scram:9644 security user create kafcli
+        -p "$$KAFCLI_IT_SCRAM_PASSWORD" --mechanism SCRAM-SHA-256 &&
+        rpk -X admin.hosts=redpanda-scram:9644 cluster config set superusers '["kafcli"]' &&
+        rpk -X admin.hosts=redpanda-scram:9644 cluster config set enable_sasl true
+    healthcheck:
+      disable: true
+
+  redpanda-mtls:
+    <<: *redpanda
+    command:
+      - >-
+        cp /fixtures/redpanda.yaml /var/lib/redpanda/redpanda.yaml &&
+        exec rpk redpanda start --mode dev-container --smp 1 --config /var/lib/redpanda/redpanda.yaml
+    configs:
+      - source: mtls-broker-config
+        target: /fixtures/redpanda.yaml
+    volumes:
+      - ./certificates:/certs:ro
+    ports:
+      - "39092:39092"
+      - "39644:9644"
+
+configs:
+  plaintext-broker-config:
+    content: |
+      redpanda:
+        data_directory: /var/lib/redpanda/data
+        node_id: 0
+        seed_servers: []
+        rpc_server:
+          address: 0.0.0.0
+          port: 33145
+        advertised_rpc_api:
+          address: redpanda-plaintext
+          port: 33145
+        kafka_api:
+          - name: internal
+            address: 0.0.0.0
+            port: 9092
+            authentication_method: none
+          - name: external
+            address: 0.0.0.0
+            port: 19092
+            authentication_method: none
+        advertised_kafka_api:
+          - name: internal
+            address: redpanda-plaintext
+            port: 9092
+          - name: external
+            address: localhost
+            port: 19092
+        admin:
+          - address: 0.0.0.0
+            port: 9644
+  scram-broker-config:
+    content: |
+      redpanda:
+        data_directory: /var/lib/redpanda/data
+        node_id: 0
+        seed_servers: []
+        rpc_server:
+          address: 0.0.0.0
+          port: 33145
+        advertised_rpc_api:
+          address: redpanda-scram
+          port: 33145
+        kafka_api:
+          - name: internal
+            address: 0.0.0.0
+            port: 9092
+            authentication_method: none
+          - name: external
+            address: 0.0.0.0
+            port: 29092
+            authentication_method: sasl
+        advertised_kafka_api:
+          - name: internal
+            address: redpanda-scram
+            port: 9092
+          - name: external
+            address: localhost
+            port: 29092
+        admin:
+          - address: 0.0.0.0
+            port: 9644
+  mtls-broker-config:
+    content: |
+      redpanda:
+        data_directory: /var/lib/redpanda/data
+        node_id: 0
+        seed_servers: []
+        rpc_server:
+          address: 0.0.0.0
+          port: 33145
+        advertised_rpc_api:
+          address: redpanda-mtls
+          port: 33145
+        kafka_api:
+          - name: internal
+            address: 0.0.0.0
+            port: 9092
+            authentication_method: none
+          - name: external
+            address: 0.0.0.0
+            port: 39092
+            authentication_method: mtls_identity
+        kafka_api_tls:
+          - name: external
+            enabled: true
+            cert_file: /certs/server.pem
+            key_file: /certs/server.key
+            truststore_file: /certs/ca.pem
+            require_client_auth: true
+        advertised_kafka_api:
+          - name: internal
+            address: redpanda-mtls
+            port: 9092
+          - name: external
+            address: localhost
+            port: 39092
+        admin:
+          - address: 0.0.0.0
+            port: 9644

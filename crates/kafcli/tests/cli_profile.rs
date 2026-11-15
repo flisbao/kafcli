@@ -201,3 +201,23 @@ fn every_profile_subcommand_help_has_examples() {
             .stdout(predicate::str::contains("Examples:"));
     }
 }
+
+#[test]
+fn test_against_unreachable_broker_fails_fast() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["profile", "add", "down", "--brokers", "127.0.0.1:1"])
+        .args(["--auth-type", "none", "--set-default"])
+        .assert()
+        .success();
+
+    let started = std::time::Instant::now();
+    let assertion = build_kafcli_command(directory.path())
+        .args(["profile", "test", "--timeout-seconds", "2"])
+        .assert()
+        .code(1);
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
+    assert!(stderr.starts_with("error: kafka error"), "stderr: {stderr}");
+}

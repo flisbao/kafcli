@@ -9,12 +9,13 @@ mod prompt;
 use clap::Parser;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::profile_arguments::ProfileCommand;
-use commands::profile::{add_profile, list_profiles, show_profile, use_profile};
+use commands::profile::{add_profile, list_profiles, show_profile, test_profile, use_profile};
 use execution_context::ExecutionContext;
 use exit_code::resolve_exit_code;
 use output::renderer::render_output;
 use std::io::{self, ErrorKind, Write};
 use std::process::ExitCode;
+use std::time::Duration;
 
 fn main() -> ExitCode {
     let arguments = CommandLineArguments::parse();
@@ -55,7 +56,16 @@ fn run(arguments: CommandLineArguments) -> anyhow::Result<String> {
             ProfileCommand::Use { name } => {
                 render_output(&use_profile(&context, &name)?, output_format)?
             }
-            ProfileCommand::Test { .. } => anyhow::bail!("not implemented"),
+            ProfileCommand::Test {
+                name,
+                timeout_seconds,
+            } => {
+                let timeout = Duration::from_secs(timeout_seconds);
+                render_output(
+                    &test_profile(&context, name.as_deref(), timeout)?,
+                    output_format,
+                )?
+            }
         },
     };
     Ok(rendered)

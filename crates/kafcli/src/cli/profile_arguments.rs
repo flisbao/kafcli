@@ -28,10 +28,6 @@ pub enum ProfileCommand {
     #[command(
         after_help = "Examples:\n  kafcli profile test dev\n  kafcli profile test prd --timeout-seconds 5\n  kafcli --profile prd profile test"
     )]
-    #[allow(
-        dead_code,
-        reason = "the test handler replaces this placeholder in the connection-test task"
-    )]
     Test {
         /// Profile name; defaults to the selected profile
         name: Option<String>,
