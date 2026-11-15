@@ -1,0 +1,7 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+disallowed-methods = [
+  { path = "std::boxed::Box::leak", reason = "memory leak proibido (Global Constraints)" },
+  { path = "std::thread::sleep", reason = "use timeouts do cliente; sleep só com justificativa em ADR" },
+]

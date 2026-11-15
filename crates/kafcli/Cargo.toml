@@ -1,0 +1,24 @@
+[package]
+name = "kafcli"
+description = "A command-line client for Apache Kafka."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kafcli"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+kafcli-core.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+kafcli-core = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = ["crates/kafcli", "crates/kafcli-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/kafcli"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+mem_forget = "deny"
+panic = "deny"
+todo = "deny"
+
+[workspace.dependencies]
+kafcli-core = { path = "crates/kafcli-core" }
+rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "ssl-vendored", "libz-static"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+secrecy = "0.10"
+keyring = "4.2"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+comfy-table = "8"
+time = { version = "0.3", features = ["formatting"] }
+dirs = "7"
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
