@@ -8,6 +8,13 @@ pub fn validate_profile(profile: &Profile, insecure_requested: bool) -> CoreResu
     if profile.brokers.is_empty() {
         return Err(validation_error("profile has no brokers"));
     }
+    if profile
+        .brokers
+        .iter()
+        .any(|broker| broker.trim().is_empty())
+    {
+        return Err(validation_error("profile has an empty broker address"));
+    }
     if !profile.protected {
         return Ok(());
     }
@@ -118,6 +125,16 @@ mod tests {
         let message = validation_message(validate_profile(&no_brokers, false));
 
         assert_eq!(message, "profile has no brokers");
+    }
+
+    #[test]
+    fn rejects_empty_broker_address() {
+        let mut blank_broker = profile(AuthConfig::Plaintext, false);
+        blank_broker.brokers = vec!["a:9092".to_string(), "  ".to_string()];
+
+        let message = validation_message(validate_profile(&blank_broker, false));
+
+        assert_eq!(message, "profile has an empty broker address");
     }
 
     #[test]

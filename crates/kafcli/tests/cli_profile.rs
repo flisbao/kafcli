@@ -290,3 +290,17 @@ fn test_rejects_zero_timeout_seconds() {
         .code(1)
         .stderr(predicate::str::contains("not in 1..=3600"));
 }
+
+#[test]
+fn add_rejects_empty_broker_entries() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["profile", "add", "dev", "--brokers", "a:9092,,b:9092"])
+        .args(["--auth-type", "none"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "profile has an empty broker address",
+        ));
+}
