@@ -63,7 +63,7 @@ A `0001` está reservada ao spike do Event Hubs.
 
 - Fixtures com Docker Compose e Redpanda em vez de testcontainers. Portas fixas e advertised listeners previsíveis tornam a configuração de teste determinística e legível.
 - O compose tem cenários para plaintext, SASL/SCRAM e mTLS.
-- O serviço `redpanda-scram-ready` é um gate: `up --wait` só retorna depois que o SASL está habilitado, evitando testes que conectam antes do broker aceitar autenticação.
+- O serviço `redpanda-scram-bootstrap` é o gate: ele cria o usuário, habilita o SASL, verifica `enable_sasl` e só então marca o healthcheck (`test -f /tmp/ready`). `up --wait` só retorna depois disso, evitando testes que conectam antes do broker aceitar autenticação. Ele fica em execução porque `up --wait` falha quando um serviço de uma única execução sai.
 - Testes de integração são `#[ignore]` e rodam em job separado do CI.
 
 ### Build de release

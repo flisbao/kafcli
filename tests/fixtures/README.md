@@ -8,7 +8,7 @@ Três brokers Redpanda (`v25.3.18`) para os testes de conexão do `kafcli`.
 | `redpanda-scram` | 29092 | 29644 | SASL_PLAINTEXT, SCRAM-SHA-256 | usuário `kafcli`, senha `kafcli-it-scram-secret` |
 | `redpanda-mtls` | 39092 | 39644 | TLS com certificado de cliente obrigatório | `certificates/` |
 
-O serviço `redpanda-scram-bootstrap` roda uma vez: cria o usuário `kafcli`, torna-o superusuário e liga o SASL no cluster SCRAM. Ele sai com código 0 quando termina.
+O serviço `redpanda-scram-bootstrap` cria o usuário `kafcli`, torna-o superusuário e liga o SASL no cluster SCRAM. Depois fica no ar (`sleep infinity`) e o healthcheck só passa quando o bootstrap termina; é nele que `up --wait` se baseia.
 
 ## Subir e rodar os testes
 

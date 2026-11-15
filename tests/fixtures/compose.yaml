@@ -47,10 +47,12 @@ services:
       - "127.0.0.1:29092:29092"
       - "127.0.0.1:29644:9644"
 
-  # Creates the SCRAM user and turns SASL on once the broker answers its admin API.
+  # Creates the SCRAM user and turns SASL on once the broker answers its admin API, then stays up.
+  # `up --wait` gates on its healthcheck, which passes only after the user exists and SASL is
+  # enabled, so the SCRAM tests never run before the broker accepts authentication. It is a
+  # long-running service because `up --wait` fails when a one-shot service exits.
   redpanda-scram-bootstrap:
     <<: *redpanda
-    restart: "no"
     depends_on:
       redpanda-scram:
         condition: service_healthy
@@ -62,23 +64,16 @@ services:
         rpk -X admin.hosts=redpanda-scram:9644 security user create kafcli
         -p "$$KAFCLI_IT_SCRAM_PASSWORD" --mechanism SCRAM-SHA-256 &&
         rpk -X admin.hosts=redpanda-scram:9644 cluster config set superusers '["kafcli"]' &&
-        rpk -X admin.hosts=redpanda-scram:9644 cluster config set enable_sasl true
+        rpk -X admin.hosts=redpanda-scram:9644 cluster config set enable_sasl true &&
+        rpk -X admin.hosts=redpanda-scram:9644 cluster config get enable_sasl | grep -qx true &&
+        touch /tmp/ready &&
+        exec sleep infinity
     healthcheck:
-      disable: true
-
-  # Gate for `up --wait`: finishes only after the bootstrap succeeded and SASL is enabled, so the
-  # SCRAM tests never run before the user exists.
-  redpanda-scram-ready:
-    <<: *redpanda
-    restart: "no"
-    depends_on:
-      redpanda-scram-bootstrap:
-        condition: service_completed_successfully
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - rpk -X admin.hosts=redpanda-scram:9644 cluster config get enable_sasl | grep -qx true
-    healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "test -f /tmp/ready"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 5s
 
   redpanda-mtls:
     <<: *redpanda
