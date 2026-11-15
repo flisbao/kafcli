@@ -3,6 +3,12 @@ name: Release build
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - ".github/workflows/release-build.yml"
   workflow_dispatch:
 
 env:
