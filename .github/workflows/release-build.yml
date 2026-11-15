@@ -1,0 +1,105 @@
+name: Release build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - ".github/workflows/release-build.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl toolchain and cmake (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+
+      - name: Install cmake (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install cmake
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # musl-tools ships only musl-gcc, not a musl C++ compiler. rdkafka-sys
+      # configures librdkafka through the cmake crate, whose project() enables
+      # CXX, so the C++ compiler must be pointed at the host g++. The C++
+      # wrapper (rdkafka++) is built but not linked into kafcli, so the host
+      # g++ only has to pass configure and compile unused objects.
+      - name: Build release binary (Linux musl)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CXX_x86_64_unknown_linux_musl: g++
+        run: cargo build --release --target ${{ matrix.target }} -p kafcli
+
+      - name: Build release binary (macOS)
+        if: matrix.os == 'macos-latest'
+        run: cargo build --release --target ${{ matrix.target }} -p kafcli
+
+      - name: Verify version output
+        run: |
+          binary="target/${{ matrix.target }}/release/kafcli"
+          version_line="$("$binary" --version)"
+          echo "$version_line"
+          case "$version_line" in
+            "kafcli 0.1.0"*) ;;
+            *) echo "unexpected version output: $version_line" >&2; exit 1 ;;
+          esac
+
+      - name: Verify static linking (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          binary="target/${{ matrix.target }}/release/kafcli"
+          file_report="$(file "$binary")"
+          echo "$file_report"
+          case "$file_report" in
+            *"statically linked"*|*"static-pie linked"*) ;;
+            *) echo "binary is not statically linked" >&2; exit 1 ;;
+          esac
+
+      - name: Verify no librdkafka or libssl dependency (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          binary="target/${{ matrix.target }}/release/kafcli"
+          linked_libraries="$(otool -L "$binary")"
+          echo "$linked_libraries"
+          if echo "$linked_libraries" | grep -qE 'librdkafka|libssl'; then
+            echo "binary links librdkafka or libssl dynamically" >&2
+            exit 1
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kafcli-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/kafcli
+          if-no-files-found: error
