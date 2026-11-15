@@ -13,6 +13,7 @@ pub struct Configuration {
 
 /// A named Kafka cluster connection.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     pub brokers: Vec<String>,
     pub auth: AuthConfig,

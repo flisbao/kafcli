@@ -2,7 +2,7 @@ use crate::config::error_description::{describe_figment_error, describe_toml_syn
 use crate::config::model::Configuration;
 use crate::error::{CoreError, CoreResult};
 use figment::Figment;
-use figment::providers::{Env, Format, Toml};
+use figment::providers::{Env, Serialized};
 use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
@@ -18,7 +18,7 @@ const MAXIMUM_CONFIGURATION_BYTES: u64 = 1024 * 1024;
 /// Values in the file take precedence over environment variables.
 pub fn load_configuration(config_path: &Path) -> CoreResult<Configuration> {
     let file_source = read_configuration_source(config_path)?;
-    toml::from_str::<toml::Table>(&file_source).map_err(|error| {
+    let file_table: toml::Table = toml::from_str(&file_source).map_err(|error| {
         CoreError::Configuration(describe_toml_syntax_error(&error, &file_source))
     })?;
 
@@ -28,12 +28,15 @@ pub fn load_configuration(config_path: &Path) -> CoreResult<Configuration> {
                 .split("__")
                 .ignore(&["CONFIG"]),
         )
-        .merge(Toml::string(&file_source))
+        .merge(Serialized::defaults(file_table))
         .extract()
         .map_err(|error| CoreError::Configuration(describe_figment_error(&error)))
 }
 
 /// Reads the file with an explicit size limit; a missing file reads as empty text.
+///
+/// The text is parsed exactly once, by the `toml` crate, so no other TOML parser (and no
+/// parser message echoing source lines) is involved.
 fn read_configuration_source(config_path: &Path) -> CoreResult<String> {
     let file = match File::open(config_path) {
         Ok(file) => file,
@@ -212,6 +215,93 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
 
         assert!(error.contains("line 4"));
         assert!(!error.contains("TOPSECRET"));
+    }
+
+    #[test]
+    fn multi_line_inline_table_error_hides_secret() {
+        let error = load_text(
+            r#"
+[profiles.eh]
+brokers = ["b:9093"]
+auth = { type = "azure-connection-string", secret_ref = "Endpoint=TOPSECRET",
+}
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("secret reference"));
+        assert!(!error.contains("TOPSECRET"));
+    }
+
+    #[test]
+    fn escape_sequence_error_hides_secret() {
+        let error = load_text(
+            r#"
+[profiles.eh]
+brokers = ["b:9093"]
+auth = { type = "azure-connection-string", secret_ref = "x\eTOPSECRET" }
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(!error.contains("TOPSECRET"));
+    }
+
+    #[test]
+    fn bare_time_value_error_hides_secret() {
+        let error = load_text(
+            r#"
+[profiles.plain]
+brokers = ["b:9092"]
+auth = { type = "sasl-plain", username = 07:32, secret_ref = "env:TOPSECRET" }
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(!error.contains("TOPSECRET"));
+    }
+
+    #[test]
+    fn keeps_datetime_values_in_schema_registry() {
+        let configuration = load_text(
+            r#"
+[profiles.eh]
+brokers = ["b:9093"]
+auth = { type = "none" }
+
+[profiles.eh.schema_registry]
+issued = 2026-11-15T07:32:00Z
+"#,
+        )
+        .unwrap();
+
+        let registry = configuration.profiles["eh"]
+            .schema_registry
+            .clone()
+            .unwrap();
+        assert_eq!(
+            registry["issued"].as_datetime().unwrap().to_string(),
+            "2026-11-15T07:32:00Z"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_profile_field() {
+        let error = load_text(
+            r#"
+[profiles.prod]
+brokers = ["b:9092"]
+protectd = true
+auth = { type = "none" }
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("protectd"));
     }
 
     #[test]
