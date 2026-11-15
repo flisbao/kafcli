@@ -1,3 +1,4 @@
+use crate::output::terminal_text::sanitize_for_terminal;
 use kafcli_core::error::CoreResult;
 use kafcli_core::guard::confirmation_prompter::ConfirmationPrompter;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -17,13 +18,15 @@ impl ConfirmationPrompter for TerminalPrompter {
         decide_interactivity(io::stdin().is_terminal(), io::stderr().is_terminal())
     }
 
+    /// The guard builds the question text (including `[y/N]` or the typed-value instruction),
+    /// so the prompter prints it as-is and does not add its own.
     fn confirm_yes_no(&self, message: &str) -> CoreResult<bool> {
-        let answer = ask(&format!("{message} [y/N]: "))?;
+        let answer = ask(message)?;
         Ok(matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes"))
     }
 
     fn confirm_typed_value(&self, message: &str, expected_value: &str) -> CoreResult<bool> {
-        let answer = ask(&format!("{message} (type '{expected_value}' to confirm): "))?;
+        let answer = ask(message)?;
         Ok(answer == expected_value)
     }
 }
@@ -37,6 +40,16 @@ fn decide_interactivity(stdin_is_terminal: bool, stderr_is_terminal: bool) -> bo
     stdin_is_terminal && stderr_is_terminal
 }
 
+/// The question as shown: the guard's text, sanitized (it can contain broker-controlled names),
+/// followed by a space before the cursor.
+#[allow(
+    dead_code,
+    reason = "only reachable through TerminalPrompter, which a later plan wires in"
+)]
+fn format_prompt_line(question: &str) -> String {
+    sanitize_for_terminal(&format!("{question} "))
+}
+
 /// Writes `question` to stderr and reads one line, without its line break.
 #[allow(
     dead_code,
@@ -44,7 +57,7 @@ fn decide_interactivity(stdin_is_terminal: bool, stderr_is_terminal: bool) -> bo
 )]
 fn ask(question: &str) -> CoreResult<String> {
     let mut stderr = io::stderr();
-    stderr.write_all(question.as_bytes())?;
+    stderr.write_all(format_prompt_line(question).as_bytes())?;
     stderr.flush()?;
 
     let mut limited_stdin = io::stdin().lock().take(MAXIMUM_CONFIRMATION_INPUT_BYTES);
@@ -61,6 +74,14 @@ mod tests {
     fn reports_non_interactive_when_stdin_is_not_terminal() {
         assert!(!decide_interactivity(false, true));
         assert!(!decide_interactivity(false, false));
+    }
+
+    #[test]
+    fn prompt_line_is_printed_once_and_sanitized() {
+        let line = format_prompt_line("Type 'orders\x1b[2J' to confirm: reset offsets [y/N]");
+
+        assert_eq!(line, "Type 'orders?[2J' to confirm: reset offsets [y/N] ");
+        assert_eq!(line.matches("to confirm").count(), 1);
     }
 
     #[test]
