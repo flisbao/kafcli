@@ -31,8 +31,8 @@ services:
       - source: plaintext-broker-config
         target: /fixtures/redpanda.yaml
     ports:
-      - "19092:19092"
-      - "19644:9644"
+      - "127.0.0.1:19092:19092"
+      - "127.0.0.1:19644:9644"
 
   redpanda-scram:
     <<: *redpanda
@@ -44,8 +44,8 @@ services:
       - source: scram-broker-config
         target: /fixtures/redpanda.yaml
     ports:
-      - "29092:29092"
-      - "29644:9644"
+      - "127.0.0.1:29092:29092"
+      - "127.0.0.1:29644:9644"
 
   # Creates the SCRAM user and turns SASL on once the broker answers its admin API.
   redpanda-scram-bootstrap:
@@ -92,8 +92,8 @@ services:
     volumes:
       - ./certificates:/certs:ro
     ports:
-      - "39092:39092"
-      - "39644:9644"
+      - "127.0.0.1:39092:39092"
+      - "127.0.0.1:39644:9644"
 
 configs:
   plaintext-broker-config:
