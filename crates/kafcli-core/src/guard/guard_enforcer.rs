@@ -84,14 +84,16 @@ fn aborted(reason: &str) -> CoreError {
 mod tests {
     use super::*;
     use crate::error::{CoreError, CoreResult};
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
-    /// Prompter with scripted answers that counts how many confirmation prompts were shown.
+    /// Prompter with scripted answers that counts prompts and records the last typed prompt.
     struct ScriptedPrompter {
         interactive: bool,
         yes_no_answer: bool,
         typed_answer: bool,
         calls: Cell<u32>,
+        typed_message: RefCell<String>,
+        typed_expected_value: RefCell<String>,
     }
 
     impl ScriptedPrompter {
@@ -101,15 +103,15 @@ mod tests {
                 yes_no_answer,
                 typed_answer,
                 calls: Cell::new(0),
+                typed_message: RefCell::new(String::new()),
+                typed_expected_value: RefCell::new(String::new()),
             }
         }
 
         fn non_interactive() -> Self {
             Self {
                 interactive: false,
-                yes_no_answer: false,
-                typed_answer: false,
-                calls: Cell::new(0),
+                ..Self::interactive_answering(false, false)
             }
         }
 
@@ -128,8 +130,10 @@ mod tests {
             Ok(self.yes_no_answer)
         }
 
-        fn confirm_typed_value(&self, _message: &str, _expected_value: &str) -> CoreResult<bool> {
+        fn confirm_typed_value(&self, message: &str, expected_value: &str) -> CoreResult<bool> {
             self.calls.set(self.calls.get() + 1);
+            *self.typed_message.borrow_mut() = message.to_string();
+            *self.typed_expected_value.borrow_mut() = expected_value.to_string();
             Ok(self.typed_answer)
         }
     }
@@ -270,6 +274,26 @@ mod tests {
         let prompter = ScriptedPrompter::interactive_answering(false, true);
         let outcome = enforce_guard(
             &request(OperationLevel::Destructive, false, true),
+            true,
+            &prompter,
+        );
+        assert_eq!(outcome.unwrap(), GuardOutcome::Proceed);
+        assert_eq!(prompter.prompt_count(), 1);
+        assert_eq!(
+            *prompter.typed_expected_value.borrow(),
+            "pedidos-service".to_string()
+        );
+        assert_eq!(
+            *prompter.typed_message.borrow(),
+            "Type 'pedidos-service' to confirm: reset offsets of group pedidos-service"
+        );
+    }
+
+    #[test]
+    fn destructive_on_protected_prompts_even_with_assume_yes() {
+        let prompter = ScriptedPrompter::interactive_answering(false, true);
+        let outcome = enforce_guard(
+            &request(OperationLevel::Destructive, true, true),
             true,
             &prompter,
         );

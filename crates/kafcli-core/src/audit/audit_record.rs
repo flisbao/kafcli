@@ -51,9 +51,15 @@ fn current_timestamp() -> String {
 }
 
 fn resolve_operator_name() -> String {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| UNKNOWN_OPERATOR.to_string())
+    resolve_operator_name_with(|name| std::env::var(name).ok())
+}
+
+/// Picks the operator from `USER`, then `USERNAME`; empty values count as absent.
+fn resolve_operator_name_with(lookup: impl Fn(&str) -> Option<String>) -> String {
+    ["USER", "USERNAME"]
+        .iter()
+        .find_map(|name| lookup(name).filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| UNKNOWN_OPERATOR.to_string())
 }
 
 const UNKNOWN_TIMESTAMP: &str = "unknown-time";
@@ -62,8 +68,33 @@ const UNKNOWN_OPERATOR: &str = "unknown";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::OffsetDateTime;
-    use time::format_description::well_known::Rfc3339;
+
+    fn lookup_from<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn operator_prefers_user_then_username_then_unknown() {
+        let both = lookup_from(&[("USER", "alice"), ("USERNAME", "bob")]);
+        assert_eq!(resolve_operator_name_with(both), "alice");
+        let only_username = lookup_from(&[("USERNAME", "bob")]);
+        assert_eq!(resolve_operator_name_with(only_username), "bob");
+        let neither = lookup_from(&[]);
+        assert_eq!(resolve_operator_name_with(neither), "unknown");
+    }
+
+    #[test]
+    fn empty_user_falls_through_to_username() {
+        let empty_user = lookup_from(&[("USER", ""), ("USERNAME", "bob")]);
+        assert_eq!(resolve_operator_name_with(empty_user), "bob");
+        let all_empty = lookup_from(&[("USER", ""), ("USERNAME", "")]);
+        assert_eq!(resolve_operator_name_with(all_empty), "unknown");
+    }
 
     #[test]
     fn timestamp_is_rfc3339_utc() {

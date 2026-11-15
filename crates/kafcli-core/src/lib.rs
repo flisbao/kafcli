@@ -1,6 +1,6 @@
 //! Core library for kafcli.
 //!
-//! Modules (configuration, secrets, auth, guards, audit) are added by later tasks.
+//! Modules: configuration, secrets, auth, connection, error, guard and audit.
 
 pub mod audit;
 pub mod auth;
