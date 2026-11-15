@@ -22,13 +22,13 @@ pub fn show_profile(
         brokers: selected.profile.brokers.clone(),
         auth_type: selected.profile.auth.type_name().to_string(),
         principal,
-        secret_references: secret_references_of(&selected.profile.auth),
+        secret_references: collect_secret_references(&selected.profile.auth),
         protected: selected.profile.protected,
         has_schema_registry: selected.profile.schema_registry.is_some(),
     })
 }
 
-fn secret_references_of(auth: &AuthConfig) -> Vec<String> {
+fn collect_secret_references(auth: &AuthConfig) -> Vec<String> {
     let references: Vec<&SecretReference> = match auth {
         AuthConfig::Plaintext | AuthConfig::Tls(_) => Vec::new(),
         AuthConfig::MutualTls(config) => config.key_password_ref.iter().collect(),

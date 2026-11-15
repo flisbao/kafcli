@@ -17,10 +17,10 @@ pub enum KafcliExitCode {
 
 /// Maps an error to the process exit code: an aborted operation is 3, anything else is 1.
 pub fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
-    ExitCode::from(kafcli_exit_code_for_error(error) as u8)
+    ExitCode::from(classify_exit_code(error) as u8)
 }
 
-fn kafcli_exit_code_for_error(error: &anyhow::Error) -> KafcliExitCode {
+fn classify_exit_code(error: &anyhow::Error) -> KafcliExitCode {
     match error
         .chain()
         .find_map(|cause| cause.downcast_ref::<CoreError>())
@@ -38,7 +38,7 @@ mod tests {
     fn aborted_operation_maps_to_exit_code_three() {
         let error = anyhow::Error::new(CoreError::OperationAborted("typed value mismatch".into()));
 
-        assert_eq!(kafcli_exit_code_for_error(&error), KafcliExitCode::Aborted);
+        assert_eq!(classify_exit_code(&error), KafcliExitCode::Aborted);
     }
 
     #[test]
@@ -46,13 +46,13 @@ mod tests {
         let error = anyhow::Error::new(CoreError::OperationAborted("no".into()))
             .context("could not delete topic");
 
-        assert_eq!(kafcli_exit_code_for_error(&error), KafcliExitCode::Aborted);
+        assert_eq!(classify_exit_code(&error), KafcliExitCode::Aborted);
     }
 
     #[test]
     fn other_errors_map_to_exit_code_one() {
         let error = anyhow::anyhow!("something else failed");
 
-        assert_eq!(kafcli_exit_code_for_error(&error), KafcliExitCode::Failure);
+        assert_eq!(classify_exit_code(&error), KafcliExitCode::Failure);
     }
 }

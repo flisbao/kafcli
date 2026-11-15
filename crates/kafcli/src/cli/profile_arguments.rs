@@ -98,7 +98,7 @@ pub enum AuthTypeArgument {
 
 impl AuthTypeArgument {
     /// The `--auth-type` spelling, used in error messages.
-    pub fn label(self) -> &'static str {
+    pub fn to_flag_spelling(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Tls => "tls",

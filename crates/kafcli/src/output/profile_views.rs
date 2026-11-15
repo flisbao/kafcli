@@ -45,7 +45,7 @@ pub struct ProfileDetailView {
 
 impl TableRenderable for ProfileSummary {
     fn render_table(&self) -> String {
-        summary_table([self]).to_string()
+        build_summary_table([self]).to_string()
     }
 }
 
@@ -54,13 +54,13 @@ impl TableRenderable for ProfileListView {
         if self.profiles.is_empty() {
             return "no profiles configured".to_string();
         }
-        summary_table(&self.profiles).to_string()
+        build_summary_table(&self.profiles).to_string()
     }
 }
 
 impl TableRenderable for ProfileDetailView {
     fn render_table(&self) -> String {
-        let mut table = new_table(&["FIELD", "VALUE"]);
+        let mut table = build_table(&["FIELD", "VALUE"]);
         table.add_row(vec![Cell::new("name"), Cell::new(&self.name)]);
         table.add_row(vec![
             Cell::new("brokers"),
@@ -73,7 +73,7 @@ impl TableRenderable for ProfileDetailView {
         ]);
         table.add_row(vec![
             Cell::new("secret_references"),
-            Cell::new(joined_or_dash(&self.secret_references)),
+            Cell::new(join_or_dash(&self.secret_references)),
         ]);
         table.add_row(vec![Cell::new("protected"), Cell::new(self.protected)]);
         table.add_row(vec![
@@ -84,8 +84,8 @@ impl TableRenderable for ProfileDetailView {
     }
 }
 
-fn summary_table<'a>(summaries: impl IntoIterator<Item = &'a ProfileSummary>) -> Table {
-    let mut table = new_table(&["NAME", "BROKERS", "AUTH", "PROTECTED", "DEFAULT"]);
+fn build_summary_table<'a>(summaries: impl IntoIterator<Item = &'a ProfileSummary>) -> Table {
+    let mut table = build_table(&["NAME", "BROKERS", "AUTH", "PROTECTED", "DEFAULT"]);
     for summary in summaries {
         table.add_row(vec![
             Cell::new(&summary.name),
@@ -98,14 +98,14 @@ fn summary_table<'a>(summaries: impl IntoIterator<Item = &'a ProfileSummary>) ->
     table
 }
 
-fn new_table(headers: &[&str]) -> Table {
+fn build_table(headers: &[&str]) -> Table {
     let mut table = Table::new();
     *table.style_mut() = UTF8_FULL_CONDENSED;
     table.set_header(headers.iter().map(Cell::new).collect::<Vec<_>>());
     table
 }
 
-fn joined_or_dash(values: &[String]) -> String {
+fn join_or_dash(values: &[String]) -> String {
     if values.is_empty() {
         "-".to_string()
     } else {

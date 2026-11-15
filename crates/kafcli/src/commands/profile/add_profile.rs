@@ -54,12 +54,12 @@ fn build_auth_config(arguments: &AddProfileArguments) -> anyhow::Result<AuthConf
         })),
         AuthTypeArgument::Mtls => Ok(AuthConfig::MutualTls(MutualTlsAuthConfig {
             ca_location: arguments.ca_location.clone(),
-            certificate_location: required_value(
+            certificate_location: require_value(
                 &arguments.certificate_location,
                 "--certificate-location",
                 auth_type,
             )?,
-            key_location: required_value(&arguments.key_location, "--key-location", auth_type)?,
+            key_location: require_value(&arguments.key_location, "--key-location", auth_type)?,
             key_password_ref: arguments
                 .key_password_ref
                 .as_deref()
@@ -76,7 +76,7 @@ fn build_auth_config(arguments: &AddProfileArguments) -> anyhow::Result<AuthConf
             Ok(AuthConfig::SaslScram512(build_sasl_credentials(arguments)?))
         }
         AuthTypeArgument::AzureConnectionString => {
-            let secret_text = required_value(&arguments.secret_ref, "--secret-ref", auth_type)?;
+            let secret_text = require_value(&arguments.secret_ref, "--secret-ref", auth_type)?;
             Ok(AuthConfig::AzureConnectionString(
                 AzureConnectionStringConfig {
                     secret_ref: parse_secret_reference(&secret_text, "--secret-ref")?,
@@ -90,16 +90,16 @@ fn build_sasl_credentials(
     arguments: &AddProfileArguments,
 ) -> anyhow::Result<SaslCredentialsConfig> {
     let auth_type = arguments.auth_type;
-    let secret_text = required_value(&arguments.secret_ref, "--secret-ref", auth_type)?;
+    let secret_text = require_value(&arguments.secret_ref, "--secret-ref", auth_type)?;
     Ok(SaslCredentialsConfig {
-        username: required_value(&arguments.username, "--username", auth_type)?,
+        username: require_value(&arguments.username, "--username", auth_type)?,
         secret_ref: parse_secret_reference(&secret_text, "--secret-ref")?,
         ca_location: arguments.ca_location.clone(),
         use_tls: !arguments.no_tls,
     })
 }
 
-fn required_value<T: Clone>(
+fn require_value<T: Clone>(
     value: &Option<T>,
     flag_name: &str,
     auth_type: AuthTypeArgument,
@@ -107,7 +107,7 @@ fn required_value<T: Clone>(
     value.clone().ok_or_else(|| {
         anyhow!(
             "{flag_name} is required for auth type {}",
-            auth_type.label()
+            auth_type.to_flag_spelling()
         )
     })
 }

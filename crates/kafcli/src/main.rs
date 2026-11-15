@@ -13,13 +13,14 @@ use commands::profile::{add_profile, list_profiles, show_profile, use_profile};
 use execution_context::ExecutionContext;
 use exit_code::exit_code_for_error;
 use output::renderer::render_output;
+use std::io::{self, ErrorKind, Write};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let arguments = CommandLineArguments::parse();
     logging::initialize_logging(arguments.global.verbosity);
     match run(arguments) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(rendered) => write_result_to_stdout(&rendered),
         Err(error) => {
             eprintln!("error: {error:#}");
             exit_code_for_error(&error)
@@ -27,7 +28,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(arguments: CommandLineArguments) -> anyhow::Result<()> {
+/// A reader that closes the pipe early (for example `kafcli ... | head`) is a normal end, not a failure.
+fn write_result_to_stdout(rendered: &str) -> ExitCode {
+    match writeln!(io::stdout().lock(), "{rendered}") {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            exit_code_for_error(&anyhow::Error::from(error))
+        }
+    }
+}
+
+fn run(arguments: CommandLineArguments) -> anyhow::Result<String> {
     let output_format = arguments.global.output;
     let context = ExecutionContext::from_global_arguments(arguments.global)?;
     let rendered = match arguments.command {
@@ -45,6 +58,5 @@ fn run(arguments: CommandLineArguments) -> anyhow::Result<()> {
             ProfileCommand::Test { .. } => anyhow::bail!("not implemented"),
         },
     };
-    println!("{rendered}");
-    Ok(())
+    Ok(rendered)
 }
