@@ -18,12 +18,12 @@ figment.workspace = true
 keyring = { workspace = true, optional = true }
 secrecy.workspace = true
 serde.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
-tempfile.workspace = true
 
 [lints]
 workspace = true
