@@ -11,7 +11,7 @@ use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::profile_arguments::ProfileCommand;
 use commands::profile::{add_profile, list_profiles, show_profile, use_profile};
 use execution_context::ExecutionContext;
-use exit_code::exit_code_for_error;
+use exit_code::resolve_exit_code;
 use output::renderer::render_output;
 use std::io::{self, ErrorKind, Write};
 use std::process::ExitCode;
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
         Ok(rendered) => write_result_to_stdout(&rendered),
         Err(error) => {
             eprintln!("error: {error:#}");
-            exit_code_for_error(&error)
+            resolve_exit_code(&error)
         }
     }
 }
@@ -35,7 +35,7 @@ fn write_result_to_stdout(rendered: &str) -> ExitCode {
         Err(error) if error.kind() == ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
-            exit_code_for_error(&anyhow::Error::from(error))
+            resolve_exit_code(&anyhow::Error::from(error))
         }
     }
 }

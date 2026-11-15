@@ -3,11 +3,7 @@ use kafcli_core::guard::confirmation_prompter::ConfirmationPrompter;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 
 /// Longest answer read from stdin; longer input is cut off so a stray pipe cannot exhaust memory.
-#[allow(
-    dead_code,
-    reason = "only reachable through TerminalPrompter, which a later plan wires in"
-)]
-pub const MAXIMUM_CONFIRMATION_INPUT_BYTES: u64 = 1024;
+const MAXIMUM_CONFIRMATION_INPUT_BYTES: u64 = 1024;
 
 /// Asks questions on stderr and reads answers from stdin.
 #[allow(

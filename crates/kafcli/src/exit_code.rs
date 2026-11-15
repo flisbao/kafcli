@@ -16,7 +16,7 @@ pub enum KafcliExitCode {
 }
 
 /// Maps an error to the process exit code: an aborted operation is 3, anything else is 1.
-pub fn exit_code_for_error(error: &anyhow::Error) -> ExitCode {
+pub fn resolve_exit_code(error: &anyhow::Error) -> ExitCode {
     ExitCode::from(classify_exit_code(error) as u8)
 }
 
