@@ -18,12 +18,12 @@ const SCRAM_USERNAME: &str = "kafcli";
 const SCRAM_PASSWORD: &str = "kafcli-it-scram-secret";
 const SCRAM_PASSWORD_VARIABLE: &str = "KAFCLI_IT_SCRAM_PASSWORD";
 
-fn certificate_directory() -> PathBuf {
+fn locate_certificate_directory() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/certificates")
 }
 
-fn certificate_file(file_name: &str) -> PathBuf {
-    certificate_directory().join(file_name)
+fn locate_certificate_file(file_name: &str) -> PathBuf {
+    locate_certificate_directory().join(file_name)
 }
 
 fn build_kafcli_command(config_directory: &Path) -> Command {
@@ -143,9 +143,9 @@ fn rejects_wrong_scram_password() {
 #[ignore = "requires docker compose fixtures"]
 fn connects_with_mutual_tls() {
     let directory = tempfile::tempdir().unwrap();
-    let ca_location = certificate_file("ca.pem");
-    let client_certificate = certificate_file("client.pem");
-    let client_key = certificate_file("client.key");
+    let ca_location = locate_certificate_file("ca.pem");
+    let client_certificate = locate_certificate_file("client.pem");
+    let client_key = locate_certificate_file("client.key");
     add_profile(
         directory.path(),
         "mtls",

@@ -23,7 +23,7 @@ pub struct JsonLinesAuditWriter {
 }
 
 impl JsonLinesAuditWriter {
-    pub fn in_directory(state_directory: &Path) -> Self {
+    pub fn create_in_directory(state_directory: &Path) -> Self {
         Self {
             log_path: state_directory.join(AUDIT_LOG_FILE_NAME),
         }
@@ -39,7 +39,7 @@ impl AuditWriter for JsonLinesAuditWriter {
         if let Some(directory) = self.log_path.parent() {
             create_audit_directory(directory)?;
         }
-        let mut line = serde_json::to_string(record).map_err(serialization_error)?;
+        let mut line = serde_json::to_string(record).map_err(map_serialization_error)?;
         line.push('\n');
         let mut options = OpenOptions::new();
         options.create(true).append(true);
@@ -66,7 +66,7 @@ fn create_audit_directory(directory: &Path) -> std::io::Result<()> {
     builder.create(directory)
 }
 
-fn serialization_error(error: serde_json::Error) -> CoreError {
+fn map_serialization_error(error: serde_json::Error) -> CoreError {
     CoreError::Io(std::io::Error::other(error))
 }
 
@@ -82,7 +82,7 @@ mod tests {
     #[test]
     fn appends_one_json_line_per_record() {
         let directory = tempfile::tempdir().unwrap();
-        let writer = JsonLinesAuditWriter::in_directory(directory.path());
+        let writer = JsonLinesAuditWriter::create_in_directory(directory.path());
         writer
             .append_record(&sample_record(AuditOutcome::Executed))
             .unwrap();
@@ -106,7 +106,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let state_directory = root.path().join("kafcli");
-        let writer = JsonLinesAuditWriter::in_directory(&state_directory);
+        let writer = JsonLinesAuditWriter::create_in_directory(&state_directory);
 
         writer
             .append_record(&sample_record(AuditOutcome::Executed))
@@ -130,7 +130,7 @@ mod tests {
     fn creates_state_directory_when_missing() {
         let root = tempfile::tempdir().unwrap();
         let state_directory = root.path().join("nested").join("kafcli");
-        let writer = JsonLinesAuditWriter::in_directory(&state_directory);
+        let writer = JsonLinesAuditWriter::create_in_directory(&state_directory);
         writer
             .append_record(&sample_record(AuditOutcome::DryRun))
             .unwrap();

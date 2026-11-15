@@ -80,7 +80,7 @@ pub struct SaslCredentialsConfig {
     pub secret_ref: SecretReference,
     pub ca_location: Option<PathBuf>,
     /// `false` selects SASL_PLAINTEXT, intended for local development only.
-    #[serde(default = "enabled")]
+    #[serde(default = "default_use_tls")]
     pub use_tls: bool,
 }
 
@@ -90,7 +90,7 @@ pub struct AzureConnectionStringConfig {
     pub secret_ref: SecretReference,
 }
 
-fn enabled() -> bool {
+fn default_use_tls() -> bool {
     true
 }
 

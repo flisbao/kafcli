@@ -18,12 +18,12 @@ impl FromStr for SecretReference {
     type Err = CoreError;
 
     fn from_str(text: &str) -> CoreResult<Self> {
-        let (scheme, body) = text.split_once(':').ok_or_else(invalid_form)?;
+        let (scheme, body) = text.split_once(':').ok_or_else(build_invalid_form_error)?;
         match scheme {
             "env" => parse_environment_body(body),
             "file" => parse_file_body(body),
             "keyring" => parse_keyring_body(body),
-            _ => Err(invalid_form()),
+            _ => Err(build_invalid_form_error()),
         }
     }
 }
@@ -52,7 +52,7 @@ impl From<SecretReference> for String {
     }
 }
 
-fn invalid_form() -> CoreError {
+fn build_invalid_form_error() -> CoreError {
     CoreError::InvalidSecretReference(EXPECTED_FORMS.to_string())
 }
 

@@ -27,10 +27,10 @@ pub fn probe_profile_connection(
     timeout: Duration,
 ) -> CoreResult<ConnectionReport> {
     let client_config = build_client_config(profile, resolver, settings)?;
-    let consumer: BaseConsumer = client_config.create().map_err(kafka_error)?;
+    let consumer: BaseConsumer = client_config.create().map_err(map_kafka_error)?;
     let metadata = consumer
         .fetch_metadata(None, timeout)
-        .map_err(kafka_error)?;
+        .map_err(map_kafka_error)?;
 
     let mut visible_topics: Vec<String> = metadata
         .topics()
@@ -48,7 +48,7 @@ pub fn probe_profile_connection(
     })
 }
 
-fn kafka_error(error: rdkafka::error::KafkaError) -> CoreError {
+fn map_kafka_error(error: rdkafka::error::KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }
 

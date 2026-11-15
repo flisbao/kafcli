@@ -6,37 +6,39 @@ use crate::error::{CoreError, CoreResult};
 /// Protected profiles refuse plaintext authentication, disabled TLS and `--insecure`.
 pub fn validate_profile(profile: &Profile, insecure_requested: bool) -> CoreResult<()> {
     if profile.brokers.is_empty() {
-        return Err(validation_error("profile has no brokers"));
+        return Err(build_validation_error("profile has no brokers"));
     }
     if profile
         .brokers
         .iter()
         .any(|broker| broker.trim().is_empty())
     {
-        return Err(validation_error("profile has an empty broker address"));
+        return Err(build_validation_error(
+            "profile has an empty broker address",
+        ));
     }
     if !profile.protected {
         return Ok(());
     }
     if matches!(profile.auth, AuthConfig::Plaintext) {
-        return Err(validation_error(
+        return Err(build_validation_error(
             "auth type 'none' is not allowed on a protected profile",
         ));
     }
     if insecure_requested {
-        return Err(validation_error(
+        return Err(build_validation_error(
             "--insecure is not allowed on a protected profile",
         ));
     }
     if sasl_credentials_of(&profile.auth).is_some_and(|credentials| !credentials.use_tls) {
-        return Err(validation_error(
+        return Err(build_validation_error(
             "use_tls = false is not allowed on a protected profile",
         ));
     }
     Ok(())
 }
 
-fn validation_error(message: &str) -> CoreError {
+fn build_validation_error(message: &str) -> CoreError {
     CoreError::ProfileValidation(message.to_string())
 }
 

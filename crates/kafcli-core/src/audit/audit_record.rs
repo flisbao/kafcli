@@ -32,7 +32,7 @@ impl AuditRecord {
     /// Builds a record stamped with the current UTC time and the operator from the environment.
     pub fn new(profile: &str, command: &str, target: &str, outcome: AuditOutcome) -> Self {
         Self {
-            timestamp: current_timestamp(),
+            timestamp: format_current_timestamp(),
             operator: resolve_operator_name(),
             profile: profile.to_string(),
             command: command.to_string(),
@@ -44,7 +44,7 @@ impl AuditRecord {
     }
 }
 
-fn current_timestamp() -> String {
+fn format_current_timestamp() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| UNKNOWN_TIMESTAMP.to_string())
@@ -69,7 +69,9 @@ const UNKNOWN_OPERATOR: &str = "unknown";
 mod tests {
     use super::*;
 
-    fn lookup_from<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    fn build_lookup_from<'a>(
+        values: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<String> + 'a {
         move |name| {
             values
                 .iter()
@@ -80,19 +82,19 @@ mod tests {
 
     #[test]
     fn operator_prefers_user_then_username_then_unknown() {
-        let both = lookup_from(&[("USER", "alice"), ("USERNAME", "bob")]);
+        let both = build_lookup_from(&[("USER", "alice"), ("USERNAME", "bob")]);
         assert_eq!(resolve_operator_name_with(both), "alice");
-        let only_username = lookup_from(&[("USERNAME", "bob")]);
+        let only_username = build_lookup_from(&[("USERNAME", "bob")]);
         assert_eq!(resolve_operator_name_with(only_username), "bob");
-        let neither = lookup_from(&[]);
+        let neither = build_lookup_from(&[]);
         assert_eq!(resolve_operator_name_with(neither), "unknown");
     }
 
     #[test]
     fn empty_user_falls_through_to_username() {
-        let empty_user = lookup_from(&[("USER", ""), ("USERNAME", "bob")]);
+        let empty_user = build_lookup_from(&[("USER", ""), ("USERNAME", "bob")]);
         assert_eq!(resolve_operator_name_with(empty_user), "bob");
-        let all_empty = lookup_from(&[("USER", ""), ("USERNAME", "")]);
+        let all_empty = build_lookup_from(&[("USER", ""), ("USERNAME", "")]);
         assert_eq!(resolve_operator_name_with(all_empty), "unknown");
     }
 

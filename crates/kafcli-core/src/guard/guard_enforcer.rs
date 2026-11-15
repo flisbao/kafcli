@@ -37,7 +37,7 @@ fn enforce_write_guard(
         return Ok(GuardOutcome::Proceed);
     }
     if !prompter.is_interactive() {
-        return Err(aborted(
+        return Err(build_aborted_error(
             "confirmation required on protected profile: pass --yes",
         ));
     }
@@ -45,7 +45,7 @@ fn enforce_write_guard(
     if prompter.confirm_yes_no(&message)? {
         Ok(GuardOutcome::Proceed)
     } else {
-        Err(aborted("cancelled by user"))
+        Err(build_aborted_error("cancelled by user"))
     }
 }
 
@@ -61,7 +61,7 @@ fn enforce_destructive_guard(
         return Ok(GuardOutcome::Proceed);
     }
     if !prompter.is_interactive() {
-        return Err(aborted(
+        return Err(build_aborted_error(
             "typed confirmation required on protected profile; run interactively",
         ));
     }
@@ -72,11 +72,11 @@ fn enforce_destructive_guard(
     if prompter.confirm_typed_value(&message, &request.confirmation_target)? {
         Ok(GuardOutcome::Proceed)
     } else {
-        Err(aborted("typed value did not match"))
+        Err(build_aborted_error("typed value did not match"))
     }
 }
 
-fn aborted(reason: &str) -> CoreError {
+fn build_aborted_error(reason: &str) -> CoreError {
     CoreError::OperationAborted(reason.to_string())
 }
 
@@ -108,7 +108,7 @@ mod tests {
             }
         }
 
-        fn non_interactive() -> Self {
+        fn build_non_interactive_prompter() -> Self {
             Self {
                 interactive: false,
                 ..Self::interactive_answering(false, false)
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn write_on_protected_aborts_without_terminal() {
-        let prompter = ScriptedPrompter::non_interactive();
+        let prompter = ScriptedPrompter::build_non_interactive_prompter();
         let result = enforce_guard(
             &request(OperationLevel::Write, false, false),
             true,
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn destructive_on_protected_ignores_assume_yes_without_terminal() {
-        let prompter = ScriptedPrompter::non_interactive();
+        let prompter = ScriptedPrompter::build_non_interactive_prompter();
         let result = enforce_guard(
             &request(OperationLevel::Destructive, true, true),
             true,
