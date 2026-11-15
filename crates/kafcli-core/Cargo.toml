@@ -15,6 +15,7 @@ test-support = []
 [dependencies]
 dirs.workspace = true
 figment.workspace = true
+rdkafka.workspace = true
 keyring = { workspace = true, optional = true }
 secrecy.workspace = true
 serde.workspace = true

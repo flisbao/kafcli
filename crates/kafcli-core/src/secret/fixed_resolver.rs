@@ -1,24 +1,24 @@
 use super::reference::SecretReference;
 use super::resolver::SecretResolver;
 use crate::error::CoreResult;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 
 /// Test double that returns the same secret for every reference.
 pub struct FixedSecretResolver {
-    value: SecretString,
+    value: String,
 }
 
 impl FixedSecretResolver {
     pub fn returning(value: &str) -> Self {
         Self {
-            value: SecretString::from(value.to_string()),
+            value: value.to_string(),
         }
     }
 }
 
 impl SecretResolver for FixedSecretResolver {
     fn resolve_secret(&self, _reference: &SecretReference) -> CoreResult<SecretString> {
-        Ok(SecretString::from(self.value.expose_secret().to_string()))
+        Ok(SecretString::from(self.value.clone()))
     }
 }
 
