@@ -21,7 +21,7 @@ todo = "deny"
 
 [workspace.dependencies]
 kafcli-core = { path = "crates/kafcli-core" }
-rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "ssl-vendored", "libz-static", "curl-static"] }
+rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "ssl-vendored", "libz-static", "curl-static", "zstd"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 serde = { version = "1", features = ["derive"] }
