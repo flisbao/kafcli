@@ -1,0 +1,4 @@
+azure-eventhub==5.15.1
+azure-identity==1.27.0
+azure-schemaregistry==1.3.0
+azure-schemaregistry-avroencoder==1.0.0
