@@ -9,11 +9,12 @@ use crate::secret::resolver::SecretResolver;
 use rdkafka::ClientConfig;
 use rdkafka::client::ClientContext;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer};
-use rdkafka::error::{KafkaError, KafkaResult};
+use rdkafka::error::{KafkaError, KafkaResult, RDKafkaErrorCode};
 use rdkafka::message::{BorrowedMessage, DeliveryResult, Header, Headers, Message, OwnedHeaders};
 use rdkafka::producer::{BaseProducer, BaseRecord, Producer, ProducerContext};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use std::sync::mpsc::{self, Sender};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const RUN_HEADER_NAME: &str = "kafcli-probe-run";
@@ -150,22 +151,32 @@ pub fn probe_capabilities(
 ///
 /// A rejected commit is what a correct broker does, so it counts as supported. An accepted commit
 /// means the broker does not enforce group membership on simple commits.
+///
+/// Only membership and generation rejections count as supported. Any other error (timeout,
+/// authorization, unsupported version, unavailable coordinator) is classified like every other check.
 fn classify_active_group_commit(result: KafkaResult<()>) -> CapabilityOutcome {
     match result {
         Ok(()) => CapabilityOutcome::Unsupported {
             error_code: "CommitAccepted".to_string(),
             detail: Some("commit accepted while group had an active member".to_string()),
         },
-        Err(error) => CapabilityOutcome::Supported {
-            detail: Some(format!("rejected with {}", describe_rejection(&error))),
+        Err(error) => match error.rdkafka_error_code() {
+            Some(code) if is_membership_rejection(code) => CapabilityOutcome::Supported {
+                detail: Some(format!("rejected with {code:?}")),
+            },
+            _ => classify_kafka_error(&error),
         },
     }
 }
 
-fn describe_rejection(error: &KafkaError) -> String {
-    error
-        .rdkafka_error_code()
-        .map_or_else(|| error.to_string(), |code| format!("{code:?}"))
+fn is_membership_rejection(code: RDKafkaErrorCode) -> bool {
+    matches!(
+        code,
+        RDKafkaErrorCode::UnknownMemberId
+            | RDKafkaErrorCode::IllegalGeneration
+            | RDKafkaErrorCode::RebalanceInProgress
+            | RDKafkaErrorCode::FencedInstanceId
+    )
 }
 
 struct ProbeSession<'a> {
@@ -368,18 +379,20 @@ impl ProbeSession<'_> {
         let Some(first_offset) = first_offset else {
             return Ok(build_missing_batch_outcome());
         };
-        let consumer: BaseConsumer = self
-            .build_consumer_config(Some(self.probe_group.as_str()))
-            .create()?;
-        consumer.assign(&build_partition_list(self.topic, first_offset)?)?;
         let committed_offset = first_offset + 1;
-        consumer.commit(
-            &build_partition_list(self.topic, committed_offset)?,
-            CommitMode::Sync,
-        )?;
-        Ok(CapabilityOutcome::Supported {
-            detail: Some(format!("committed offset {committed_offset}")),
-        })
+        Ok(
+            match self.commit_within_timeout(
+                self.probe_group.as_str(),
+                first_offset,
+                committed_offset,
+            ) {
+                None => self.commit_timeout_outcome(),
+                Some(Ok(())) => CapabilityOutcome::Supported {
+                    detail: Some(format!("committed offset {committed_offset}")),
+                },
+                Some(Err(error)) => classify_kafka_error(&error),
+            },
+        )
     }
 
     fn check_fetch_committed_offsets(
@@ -460,14 +473,48 @@ impl ProbeSession<'_> {
             });
         }
 
-        let committer: BaseConsumer = self
-            .build_consumer_config(Some(active_group.as_str()))
-            .create()?;
-        let assignment = build_partition_list(self.topic, committed_offset)?;
-        committer.assign(&assignment)?;
-        Ok(classify_active_group_commit(
-            committer.commit(&assignment, CommitMode::Sync),
-        ))
+        Ok(
+            match self.commit_within_timeout(
+                active_group.as_str(),
+                committed_offset,
+                committed_offset,
+            ) {
+                None => self.commit_timeout_outcome(),
+                Some(result) => classify_active_group_commit(result),
+            },
+        )
+    }
+
+    /// Runs a sync commit on a worker thread and waits at most `self.timeout` for it.
+    ///
+    /// Returns `None` when the commit did not finish in time. Async commit replies are served by
+    /// the client's main queue, which `BaseConsumer::poll` does not service, so a callback-based wait
+    /// cannot complete. The worker thread may outlive the probe until the socket timeout.
+    fn commit_within_timeout(
+        &self,
+        group_id: &str,
+        assigned_offset: i64,
+        committed_offset: i64,
+    ) -> Option<KafkaResult<()>> {
+        let config = self.build_consumer_config(Some(group_id));
+        let topic = self.topic.to_string();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let outcome =
+                commit_offset_in_group(&config, &topic, assigned_offset, committed_offset);
+            // The receiver stops waiting after the timeout, so a failed send is harmless.
+            let _ = sender.send(outcome);
+        });
+        receiver.recv_timeout(self.timeout).ok()
+    }
+
+    fn commit_timeout_outcome(&self) -> CapabilityOutcome {
+        CapabilityOutcome::Failed {
+            message: format!(
+                "commit did not complete within the timeout of {:?}",
+                self.timeout
+            ),
+        }
     }
 
     /// Polls `member` until it holds a partition, returning `false` when the timeout ends first.
@@ -483,6 +530,21 @@ impl ProbeSession<'_> {
         }
         Ok(false)
     }
+}
+
+/// Creates a consumer in `config`, assigns `assigned_offset` and commits `committed_offset` synchronously.
+fn commit_offset_in_group(
+    config: &ClientConfig,
+    topic: &str,
+    assigned_offset: i64,
+    committed_offset: i64,
+) -> KafkaResult<()> {
+    let consumer: BaseConsumer = config.create()?;
+    consumer.assign(&build_partition_list(topic, assigned_offset)?)?;
+    consumer.commit(
+        &build_partition_list(topic, committed_offset)?,
+        CommitMode::Sync,
+    )
 }
 
 /// Runs one check, turning a Kafka error into the outcome for that check.
@@ -558,6 +620,47 @@ mod tests {
             CapabilityOutcome::Unsupported {
                 error_code: "CommitAccepted".to_string(),
                 detail: Some("commit accepted while group had an active member".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn illegal_generation_commit_is_supported() {
+        let outcome = classify_active_group_commit(Err(KafkaError::ConsumerCommit(
+            RDKafkaErrorCode::IllegalGeneration,
+        )));
+
+        match outcome {
+            CapabilityOutcome::Supported {
+                detail: Some(detail),
+            } => assert!(detail.contains("IllegalGeneration"), "detail: {detail}"),
+            other => panic!("expected supported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn authorization_failure_on_commit_is_failed() {
+        let outcome = classify_active_group_commit(Err(KafkaError::ConsumerCommit(
+            RDKafkaErrorCode::GroupAuthorizationFailed,
+        )));
+
+        assert!(
+            matches!(outcome, CapabilityOutcome::Failed { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_version_on_commit_is_unsupported() {
+        let outcome = classify_active_group_commit(Err(KafkaError::ConsumerCommit(
+            RDKafkaErrorCode::UnsupportedVersion,
+        )));
+
+        assert_eq!(
+            outcome,
+            CapabilityOutcome::Unsupported {
+                error_code: "UnsupportedVersion".to_string(),
+                detail: None,
             }
         );
     }
