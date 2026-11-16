@@ -9,6 +9,7 @@ use kafcli_core::capability::capability_probe::{ProbeOptions, probe_capabilities
 use kafcli_core::capability::capability_report::{
     CapabilityName, CapabilityOutcome, CapabilityReport,
 };
+use kafcli_core::capability::message_dump::{MessageDump, dump_topic_messages};
 use kafcli_core::config::model::{AuthConfig, ConnectionContext};
 use kafcli_core::connection::client_config_builder::ConnectionSettings;
 use kafcli_core::error::{CoreError, CoreResult};
@@ -138,4 +139,38 @@ fn missing_topic_fails_before_producing() {
 
     let listing = run_rpk(&["topic", "list"]);
     assert!(!listing.contains(&topic), "topic was created: {listing}");
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn dump_reads_probe_messages_with_headers() {
+    let topic = unique_name("kafcli-probe-dump");
+    let _guard = TopicGuard::create(&topic);
+    let report = probe(&topic).unwrap();
+
+    let messages = dump_topic_messages(
+        &plaintext_context(),
+        &FixedSecretResolver::returning("unused"),
+        &ConnectionSettings { insecure: false },
+        &topic,
+        10,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+
+    println!("{}", serde_json::to_string_pretty(&messages).unwrap());
+    let probe_messages: Vec<&MessageDump> = messages
+        .iter()
+        .filter(|message| message.partition == 0)
+        .filter(|message| {
+            message.headers.iter().any(|header| {
+                header.name == "kafcli-probe-run"
+                    && header.value_utf8.as_deref() == Some(report.run_identifier.as_str())
+            })
+        })
+        .collect();
+    assert!(
+        probe_messages.len() >= 3,
+        "expected at least 3 probe messages on partition 0, got {messages:?}"
+    );
 }
