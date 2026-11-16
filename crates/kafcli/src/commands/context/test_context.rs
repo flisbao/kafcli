@@ -1,4 +1,5 @@
 use crate::execution_context::ExecutionContext;
+use crate::output::production_warning::warn_if_production;
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::config::overrides::{ContextOverrides, apply_context_overrides};
 use kafcli_core::config::selection::select_context;
@@ -21,6 +22,7 @@ pub fn test_context(
     let configuration = load_configuration(&execution.config_path)?;
     let requested_name = name.or(execution.global.context.as_deref());
     let selected = select_context(&configuration, requested_name)?;
+    warn_if_production(&selected.name, &selected.context);
     let overrides = ContextOverrides {
         brokers: execution.global.brokers.clone(),
     };

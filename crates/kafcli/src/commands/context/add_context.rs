@@ -1,6 +1,7 @@
 use crate::cli::context_arguments::{AddContextArguments, AuthTypeArgument};
 use crate::execution_context::ExecutionContext;
 use crate::output::context_views::ContextSummary;
+use crate::output::production_warning::warn_if_production;
 use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
@@ -42,6 +43,11 @@ pub fn add_context(
         configuration.current_context = Some(arguments.name.clone());
     }
     save_configuration(&execution.config_path, &configuration)?;
+    if arguments.use_after_add
+        && let Some(saved_context) = configuration.contexts.get(&arguments.name)
+    {
+        warn_if_production(&arguments.name, saved_context);
+    }
     Ok(summary)
 }
 

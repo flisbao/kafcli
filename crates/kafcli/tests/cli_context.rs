@@ -430,3 +430,81 @@ fn add_rejects_empty_broker_entries() {
             "context has an empty broker address",
         ));
 }
+
+#[test]
+fn use_on_protected_context_warns_and_keeps_json_stdout_clean() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "prd", "--brokers", "prd:9093"])
+        .args(["--auth-type", "tls", "--protected"])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json", "context", "use", "prd"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "WARNING: context 'prd' is PRODUCTION",
+        ));
+
+    let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).into_owned();
+    assert!(!stderr.contains('\x1b'), "stderr: {stderr}");
+    assert!(serde_json::from_slice::<Value>(&assertion.get_output().stdout).is_ok());
+}
+
+#[test]
+fn test_on_protected_context_warns_before_connecting() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "prd", "--brokers", "127.0.0.1:1"])
+        .args(["--auth-type", "tls", "--protected"])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["context", "test", "prd", "--timeout-seconds", "2"])
+        .assert()
+        .code(1);
+
+    let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).into_owned();
+    let warning_position = stderr.find("WARNING: context 'prd' is PRODUCTION");
+    let error_position = stderr.find("error:");
+    assert!(warning_position.is_some(), "stderr: {stderr}");
+    assert!(error_position.is_some(), "stderr: {stderr}");
+    assert!(warning_position < error_position, "stderr: {stderr}");
+}
+
+#[test]
+fn unprotected_context_prints_no_warning() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path(), "dev", &[]);
+
+    build_kafcli_command(directory.path())
+        .args(["context", "use", "dev"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("WARNING").not());
+}
+
+#[test]
+fn add_with_use_on_protected_context_warns() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "prd", "--brokers", "prd:9093"])
+        .args(["--auth-type", "tls", "--protected", "--use"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "WARNING: context 'prd' is PRODUCTION",
+        ));
+
+    let without_use = tempfile::tempdir().unwrap();
+    build_kafcli_command(without_use.path())
+        .args(["context", "add", "prd", "--brokers", "prd:9093"])
+        .args(["--auth-type", "tls", "--protected"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("WARNING").not());
+}
