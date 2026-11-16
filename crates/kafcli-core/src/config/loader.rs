@@ -12,6 +12,7 @@ use std::path::Path;
 pub const ENVIRONMENT_PREFIX: &str = "KAFCLI_";
 
 const MAXIMUM_CONFIGURATION_BYTES: u64 = 1024 * 1024;
+const UTF8_BYTE_ORDER_MARK: &str = "\u{feff}";
 
 /// Loads the configuration file at `config_path`, merged over `KAFCLI_*` environment variables.
 ///
@@ -45,13 +46,17 @@ pub fn load_configuration_file_only(config_path: &Path) -> CoreResult<Configurat
 /// Parses the file once with `serde_json`, so no other JSON parser (and no parser message
 /// echoing source lines) is involved.
 ///
-/// A file with only whitespace reads as an empty document.
+/// A file with only whitespace reads as an empty document. A leading UTF-8 byte order mark, which
+/// some editors write, is ignored.
 fn read_configuration_document(config_path: &Path) -> CoreResult<Map<String, Value>> {
     let file_source = read_configuration_source(config_path)?;
-    if file_source.trim().is_empty() {
+    let json_source = file_source
+        .strip_prefix(UTF8_BYTE_ORDER_MARK)
+        .unwrap_or(&file_source);
+    if json_source.trim().is_empty() {
         return Ok(Map::new());
     }
-    let document = serde_json::from_str::<Value>(&file_source)
+    let document = serde_json::from_str::<Value>(json_source)
         .map_err(|error| CoreError::Configuration(describe_json_syntax_error(&error)))?;
     let Value::Object(entries) = document else {
         return Err(CoreError::Configuration(
@@ -82,7 +87,13 @@ fn read_configuration_source(config_path: &Path) -> CoreResult<String> {
     };
     let mut source = String::new();
     file.take(MAXIMUM_CONFIGURATION_BYTES + 1)
-        .read_to_string(&mut source)?;
+        .read_to_string(&mut source)
+        .map_err(|error| match error.kind() {
+            ErrorKind::InvalidData => {
+                CoreError::Configuration("configuration file is not valid UTF-8".to_string())
+            }
+            _ => error.into(),
+        })?;
     if source.len() as u64 > MAXIMUM_CONFIGURATION_BYTES {
         return Err(CoreError::Configuration(format!(
             "configuration file is larger than {MAXIMUM_CONFIGURATION_BYTES} bytes"
@@ -387,5 +398,28 @@ mod tests {
         .to_string();
 
         assert!(error.contains("type"));
+    }
+
+    #[test]
+    fn leading_byte_order_mark_is_ignored() {
+        let configuration = load_text("\u{feff}{\"current_context\": \"a\"}").unwrap();
+
+        assert_eq!(configuration.current_context.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn invalid_utf8_file_reports_configuration_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.json");
+        std::fs::write(&config_path, [0x7b, 0xff, 0x7d]).unwrap();
+
+        let error = load_configuration(&config_path).unwrap_err().to_string();
+
+        assert!(error.contains("not valid UTF-8"), "error: {error}");
+        assert_eq!(
+            error.matches("not valid UTF-8").count(),
+            1,
+            "error: {error}"
+        );
     }
 }

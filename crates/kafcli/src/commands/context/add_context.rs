@@ -38,15 +38,13 @@ pub fn add_context(
     let summary = ContextSummary::from_context(&arguments.name, &connection_context, is_current);
     configuration
         .contexts
-        .insert(arguments.name.clone(), connection_context);
+        .insert(arguments.name.clone(), connection_context.clone());
     if arguments.use_after_add {
         configuration.current_context = Some(arguments.name.clone());
     }
     save_configuration(&execution.config_path, &configuration)?;
-    if arguments.use_after_add
-        && let Some(saved_context) = configuration.contexts.get(&arguments.name)
-    {
-        warn_if_production(&arguments.name, saved_context);
+    if arguments.use_after_add {
+        warn_if_production(&arguments.name, &connection_context);
     }
     Ok(summary)
 }

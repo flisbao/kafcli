@@ -8,7 +8,7 @@ pub struct SelectedContext {
     pub context: ConnectionContext,
 }
 
-/// Chooses the requested context, or the configured default when no name is requested.
+/// Chooses the requested context, or the current context when no name is requested.
 pub fn select_context(
     configuration: &Configuration,
     requested_name: Option<&str>,

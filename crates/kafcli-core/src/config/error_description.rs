@@ -41,6 +41,8 @@ fn describe_single_error(error: figment::Error) -> String {
     }
 }
 
+/// Unknown field and value errors repeat the typed name on purpose, as a typo hint. This is the
+/// one deliberate exception to the rule that descriptions never echo user text (see ADR 0003).
 fn describe_kind(kind: &Kind) -> String {
     match kind {
         Kind::Message(message) => message.clone(),

@@ -508,3 +508,26 @@ fn add_with_use_on_protected_context_warns() {
         .success()
         .stderr(predicate::str::contains("WARNING").not());
 }
+
+#[test]
+fn list_marks_context_selected_by_environment_variable() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path(), "dev", &["--use"]);
+    add_plaintext_context(directory.path(), "prd", &[]);
+
+    let assertion = build_kafcli_command(directory.path())
+        .env("KAFCLI_CONTEXT", "prd")
+        .args(["--output", "json", "context", "list"])
+        .assert()
+        .success();
+
+    let contexts = parse_stdout_json(&assertion)["data"]["contexts"].clone();
+    let is_current = |name: &str| {
+        contexts
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["name"] == name))
+            .map(|item| item["is_current"].clone())
+    };
+    assert_eq!(is_current("prd"), Some(json!(true)));
+    assert_eq!(is_current("dev"), Some(json!(false)));
+}

@@ -16,11 +16,11 @@ A troca também resolve um problema concreto: `profile add` e `profile use` já 
 
 - O arquivo é `config.json`, no caminho padrão `dirs::config_dir()/kafcli/config.json`. `--config` e `KAFCLI_CONFIG` continuam substituindo o caminho.
 - Só JSON é aceito. Nenhum leitor de TOML permanece: a crate `toml` sai das dependências e a feature `toml` do figment é removida.
-- Motivos para JSON: o formato é o que `jq` e editores lêem sem plugin, e um JSON Schema pode ser publicado no futuro para validar o arquivo. A publicação do schema fica no plano 06.
+- Motivos para JSON: o formato é o que `jq` e editores leem sem plugin, e um JSON Schema pode ser publicado no futuro para validar o arquivo. A publicação do schema fica no plano 06.
 - Não há migração automática de `config.toml`. A configuração do plano 01 não foi publicada, e o usuário recria os contextos com `kafcli context add`.
 - O arquivo com as chaves `profiles` ou `default_profile` falha ao carregar, com a mensagem indicando a chave a renomear para `contexts` ou `current_context`. Sem essa rejeição explícita, `Configuration` (que aceita chaves desconhecidas) carregaria vazio em silêncio.
 - `null` em campo opcional vale como ausente (`"ca_location": null`, `"schema_registry": null`). Arquivo vazio vale como configuração vazia. Vírgula sobrando é erro com linha e coluna.
-- O JSON é lido uma única vez com `serde_json` e entregue ao figment via `Serialized`, como no plano 01. O erro do `serde_json` nunca é repassado com `Display`: a mensagem dele repete o valor, e um segredo colado no lugar errado vazaria. Erros de configuração descrevem linha e coluna, ou o caminho da chave, e nunca o valor.
+- O JSON é lido uma única vez com `serde_json` e entregue ao figment via `Serialized`, como no plano 01. O erro do `serde_json` nunca é repassado com `Display`: a mensagem dele repete o valor, e um segredo colado no lugar errado vazaria. Erros de configuração descrevem linha e coluna, ou o caminho da chave, e nunca o valor. A única exceção deliberada são os erros de campo ou valor desconhecido (`unknown field`, `unknown value`): repetem o nome digitado como dica de digitação, e por isso podem ecoar um texto que o operador escreveu no lugar errado.
 - `ConnectionContext` mantém `deny_unknown_fields`, pelo mesmo motivo do `Profile` no ADR 0002. `Configuration` continua sem `deny_unknown_fields`.
 
 ### Contextos no lugar de perfis
@@ -30,6 +30,7 @@ A troca também resolve um problema concreto: `profile add` e `profile use` já 
 - Precedência do contexto usado por um comando: argumento posicional do subcomando > `--context` > `KAFCLI_CONTEXT` > `current_context` do arquivo > `KAFCLI_CURRENT_CONTEXT`.
 - `KAFCLI_CONTEXT` existe para scripts e sessões de terminal. Um valor esquecido que aponte para um contexto inexistente faz o comando falhar com `context 'x' not found` e exit `1`. A variável nunca é gravada no arquivo: `context add` e `context use` ignoram `KAFCLI_CURRENT_CONTEXT` ao gravar.
 - `context current` imprime só o nome do contexto selecionado, para uso em scripts e no prompt do shell. Com `--output json`, o nome sai no envelope padrão.
+- `context list` marca o contexto efetivo, pela mesma regra de `context current`: `--context` ou `KAFCLI_CONTEXT` têm prioridade sobre o `current_context` do arquivo. Um nome inexistente nessas fontes não gera erro na listagem; nenhuma linha fica marcada.
 
 ### Aviso de produção
 

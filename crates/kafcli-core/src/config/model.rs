@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Whole kafcli configuration file: the default context and every named context.
+/// Whole kafcli configuration file: the current context and every named context.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Configuration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
