@@ -46,7 +46,7 @@ mod tests {
     #[test]
     fn reports_kafka_error_for_unreachable_broker_with_injected_resolver() {
         let directory = tempfile::tempdir().unwrap();
-        let config_path = directory.path().join("config.toml");
+        let config_path = directory.path().join("config.json");
         let configuration = Configuration {
             current_context: None,
             contexts: BTreeMap::from([(

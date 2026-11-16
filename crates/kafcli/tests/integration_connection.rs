@@ -33,7 +33,7 @@ fn build_kafcli_command(config_directory: &Path) -> Command {
         .env_remove("KAFCLI_CURRENT_CONTEXT")
         .env("XDG_STATE_HOME", config_directory.join("state"))
         .arg("--config")
-        .arg(config_directory.join("config.toml"));
+        .arg(config_directory.join("config.json"));
     command
 }
 

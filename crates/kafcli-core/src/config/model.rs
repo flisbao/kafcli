@@ -6,6 +6,7 @@ use std::path::PathBuf;
 /// Whole kafcli configuration file: the default context and every named context.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Configuration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_context: Option<String>,
     #[serde(default)]
     pub contexts: BTreeMap<String, ConnectionContext>,
@@ -20,7 +21,7 @@ pub struct ConnectionContext {
     #[serde(default)]
     pub protected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_registry: Option<toml::Table>,
+    pub schema_registry: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Authentication mode of a context, selected by the `type` field.

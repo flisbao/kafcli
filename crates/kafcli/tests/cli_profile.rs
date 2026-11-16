@@ -12,7 +12,7 @@ fn build_kafcli_command(config_directory: &Path) -> Command {
         .env_remove("KAFCLI_CONFIG")
         .env_remove("KAFCLI_CURRENT_CONTEXT")
         .arg("--config")
-        .arg(config_directory.join("config.toml"));
+        .arg(config_directory.join("config.json"));
     command
 }
 
@@ -225,7 +225,7 @@ fn test_against_unreachable_broker_fails_fast() {
 #[test]
 fn add_does_not_persist_environment_defaults() {
     let directory = tempfile::tempdir().unwrap();
-    let config_path = directory.path().join("config.toml");
+    let config_path = directory.path().join("config.json");
 
     build_kafcli_command(directory.path())
         .env("KAFCLI_CURRENT_CONTEXT", "prd")
@@ -241,7 +241,7 @@ fn add_does_not_persist_environment_defaults() {
 #[test]
 fn use_does_not_persist_environment_defaults() {
     let directory = tempfile::tempdir().unwrap();
-    let config_path = directory.path().join("config.toml");
+    let config_path = directory.path().join("config.json");
     add_plaintext_profile(directory.path(), "dev", &[]);
     add_plaintext_profile(directory.path(), "local", &[]);
 
@@ -253,7 +253,7 @@ fn use_does_not_persist_environment_defaults() {
 
     let written = std::fs::read_to_string(config_path).unwrap();
     assert!(
-        written.contains("current_context = \"local\""),
+        written.contains("\"current_context\": \"local\""),
         "written: {written}"
     );
     assert!(!written.contains("prd"), "written: {written}");

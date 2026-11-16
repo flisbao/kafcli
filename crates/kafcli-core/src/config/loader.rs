@@ -1,8 +1,9 @@
-use crate::config::error_description::{describe_figment_error, describe_toml_syntax_error};
+use crate::config::error_description::{describe_figment_error, describe_json_syntax_error};
 use crate::config::model::Configuration;
 use crate::error::{CoreError, CoreResult};
 use figment::Figment;
 use figment::providers::{Env, Serialized};
+use serde_json::{Map, Value};
 use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
@@ -17,14 +18,14 @@ const MAXIMUM_CONFIGURATION_BYTES: u64 = 1024 * 1024;
 /// A missing file yields an empty configuration (environment variables still apply).
 /// Values in the file take precedence over environment variables.
 pub fn load_configuration(config_path: &Path) -> CoreResult<Configuration> {
-    let file_table = read_configuration_table(config_path)?;
+    let file_document = read_configuration_document(config_path)?;
     Figment::new()
         .merge(
             Env::prefixed(ENVIRONMENT_PREFIX)
                 .split("__")
-                .ignore(&["CONFIG"]),
+                .ignore(&["CONFIG", "CONTEXT"]),
         )
-        .merge(Serialized::defaults(file_table))
+        .merge(Serialized::defaults(file_document))
         .extract()
         .map_err(|error| CoreError::Configuration(describe_figment_error(&error)))
 }
@@ -34,19 +35,42 @@ pub fn load_configuration(config_path: &Path) -> CoreResult<Configuration> {
 /// Read-modify-write commands must use this: merging the environment would persist values the
 /// operator never wrote into the file.
 pub fn load_configuration_file_only(config_path: &Path) -> CoreResult<Configuration> {
-    let file_table = read_configuration_table(config_path)?;
+    let file_document = read_configuration_document(config_path)?;
     Figment::new()
-        .merge(Serialized::defaults(file_table))
+        .merge(Serialized::defaults(file_document))
         .extract()
         .map_err(|error| CoreError::Configuration(describe_figment_error(&error)))
 }
 
-/// Parses the file once with the `toml` crate, so no other TOML parser (and no parser message
+/// Parses the file once with `serde_json`, so no other JSON parser (and no parser message
 /// echoing source lines) is involved.
-fn read_configuration_table(config_path: &Path) -> CoreResult<toml::Table> {
+///
+/// A file with only whitespace reads as an empty document.
+fn read_configuration_document(config_path: &Path) -> CoreResult<Map<String, Value>> {
     let file_source = read_configuration_source(config_path)?;
-    toml::from_str(&file_source)
-        .map_err(|error| CoreError::Configuration(describe_toml_syntax_error(&error, &file_source)))
+    if file_source.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    let document = serde_json::from_str::<Value>(&file_source)
+        .map_err(|error| CoreError::Configuration(describe_json_syntax_error(&error)))?;
+    let Value::Object(entries) = document else {
+        return Err(CoreError::Configuration(
+            "configuration file must contain a JSON object".to_string(),
+        ));
+    };
+    reject_legacy_key(&entries, "profiles", "contexts")?;
+    reject_legacy_key(&entries, "default_profile", "current_context")?;
+    Ok(entries)
+}
+
+/// Rejects a key renamed by a previous release, naming both the old and the new key.
+fn reject_legacy_key(entries: &Map<String, Value>, old_key: &str, new_key: &str) -> CoreResult<()> {
+    if entries.contains_key(old_key) {
+        return Err(CoreError::Configuration(format!(
+            "configuration uses the old key '{old_key}'; rename it to '{new_key}'"
+        )));
+    }
+    Ok(())
 }
 
 /// Reads the file with an explicit size limit; a missing file reads as empty text.
@@ -74,52 +98,64 @@ fn read_configuration_source(config_path: &Path) -> CoreResult<String> {
 )]
 mod tests {
     use super::*;
-    use crate::config::model::{AuthConfig, SaslCredentialsConfig};
+    use crate::config::model::{AuthConfig, SaslCredentialsConfig, TlsAuthConfig};
 
     /// Loads `contents` as the configuration file inside a Jail, so environment reads are isolated.
     fn load_text(contents: &str) -> CoreResult<Configuration> {
         let mut result = None;
         figment::Jail::expect_with(|jail| {
-            jail.create_file("config.toml", contents)?;
-            result = Some(load_configuration(Path::new("config.toml")));
+            jail.create_file("config.json", contents)?;
+            result = Some(load_configuration(Path::new("config.json")));
             Ok(())
         });
         result.unwrap()
     }
 
-    const ALL_AUTH_TYPES: &str = r#"
-[contexts.local]
-brokers = ["localhost:9092"]
-auth = { type = "none" }
-
-[contexts.tls]
-brokers = ["tls:9093"]
-auth = { type = "tls", ca_location = "/etc/ca.pem" }
-
-[contexts.mtls]
-brokers = ["mtls:9094"]
-auth = { type = "mtls", certificate_location = "/c.pem", key_location = "/k.pem", key_password_ref = "file:/run/kp" }
-
-[contexts.plain]
-brokers = ["plain:9095"]
-auth = { type = "sasl-plain", username = "app", secret_ref = "env:KAFKA_PASSWORD" }
-
-[contexts.scram256]
-brokers = ["scram256:9096"]
-auth = { type = "sasl-scram-256", username = "app", secret_ref = "env:KAFKA_PASSWORD" }
-
-[contexts.scram512]
-brokers = ["scram512:9097"]
-protected = true
-auth = { type = "sasl-scram-512", username = "app", secret_ref = "env:KAFKA_PASSWORD", use_tls = false }
-
-[contexts.eh]
-brokers = ["ns.servicebus.windows.net:9093"]
-auth = { type = "azure-connection-string", secret_ref = "keyring:kafcli/eh" }
-
-[contexts.eh.schema_registry]
-type = "azure"
-"#;
+    const ALL_AUTH_TYPES: &str = r#"{
+  "current_context": "local",
+  "contexts": {
+    "local": {
+      "brokers": ["localhost:9092"],
+      "auth": { "type": "none" }
+    },
+    "tls": {
+      "brokers": ["tls:9093"],
+      "auth": { "type": "tls", "ca_location": "/etc/ca.pem" }
+    },
+    "mtls": {
+      "brokers": ["mtls:9094"],
+      "auth": {
+        "type": "mtls",
+        "certificate_location": "/c.pem",
+        "key_location": "/k.pem",
+        "key_password_ref": "file:/run/kp"
+      }
+    },
+    "plain": {
+      "brokers": ["plain:9095"],
+      "auth": { "type": "sasl-plain", "username": "app", "secret_ref": "env:KAFKA_PASSWORD" }
+    },
+    "scram256": {
+      "brokers": ["scram256:9096"],
+      "auth": { "type": "sasl-scram-256", "username": "app", "secret_ref": "env:KAFKA_PASSWORD" }
+    },
+    "scram512": {
+      "brokers": ["scram512:9097"],
+      "protected": true,
+      "auth": {
+        "type": "sasl-scram-512",
+        "username": "app",
+        "secret_ref": "env:KAFKA_PASSWORD",
+        "use_tls": false
+      }
+    },
+    "eh": {
+      "brokers": ["ns.servicebus.windows.net:9093"],
+      "auth": { "type": "azure-connection-string", "secret_ref": "keyring:kafcli/eh" },
+      "schema_registry": { "type": "azure" }
+    }
+  }
+}"#;
 
     #[test]
     fn parses_contexts_for_every_wave_a_auth_type() {
@@ -143,7 +179,7 @@ type = "azure"
     fn missing_file_yields_empty_configuration() {
         figment::Jail::expect_with(|_jail| {
             assert_eq!(
-                load_configuration(Path::new("/nonexistent/kafcli.toml")).unwrap(),
+                load_configuration(Path::new("/nonexistent/kafcli.json")).unwrap(),
                 Configuration::default()
             );
             Ok(())
@@ -151,13 +187,15 @@ type = "azure"
     }
 
     #[test]
+    fn empty_or_blank_file_yields_empty_configuration() {
+        assert_eq!(load_text("").unwrap(), Configuration::default());
+        assert_eq!(load_text("  \n").unwrap(), Configuration::default());
+    }
+
+    #[test]
     fn rejects_plaintext_password_field_without_echoing_it() {
         let error = load_text(
-            r#"
-[contexts.plain]
-brokers = ["b:9092"]
-auth = { type = "sasl-plain", username = "u", secret_ref = "env:X", password = "hunter2" }
-"#,
+            r#"{"contexts": {"plain": {"brokers": ["b:9092"], "auth": {"type": "sasl-plain", "username": "u", "secret_ref": "env:X", "password": "hunter2"}}}}"#,
         )
         .unwrap_err()
         .to_string();
@@ -169,11 +207,7 @@ auth = { type = "sasl-plain", username = "u", secret_ref = "env:X", password = "
     #[test]
     fn invalid_secret_reference_error_hides_value() {
         let error = load_text(
-            r#"
-[contexts.eh]
-brokers = ["b:9093"]
-auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;SharedAccessKey=TOPSECRET" }
-"#,
+            r#"{"contexts": {"eh": {"brokers": ["b:9093"], "auth": {"type": "azure-connection-string", "secret_ref": "Endpoint=sb://ns/;SharedAccessKey=TOPSECRET"}}}}"#,
         )
         .unwrap_err()
         .to_string();
@@ -183,12 +217,102 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     }
 
     #[test]
+    fn wrong_type_error_hides_value() {
+        let error = load_text(
+            r#"{"contexts": {"prd": {"brokers": ["b:9092"], "protected": "TOPSECRET", "auth": {"type": "none"}}}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("protected"));
+        assert!(!error.contains("TOPSECRET"));
+    }
+
+    #[test]
+    fn unterminated_string_reports_line_without_echoing_it() {
+        let error = load_text(
+            r#"{
+  "contexts": {
+    "eh": {
+      "brokers": ["b:9093"],
+      "auth": {"type": "azure-connection-string", "secret_ref": "Endpoint=TOPSECRET
+    }
+  }
+}"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("JSON syntax error at line"),
+            "error: {error}"
+        );
+        assert!(!error.contains("TOPSECRET"), "error: {error}");
+    }
+
+    #[test]
+    fn trailing_comma_reports_line() {
+        let error = load_text(
+            r#"{
+  "contexts": {
+    "eh": {
+      "brokers": ["b:9093"],}
+  }
+}"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("line 4"), "error: {error}");
+    }
+
+    #[test]
+    fn rejects_non_object_document() {
+        let error = load_text(r#"["a"]"#).unwrap_err().to_string();
+
+        assert!(error.contains("JSON object"), "error: {error}");
+    }
+
+    #[test]
+    fn rejects_legacy_profiles_key() {
+        let error = load_text(r#"{"profiles": {}}"#).unwrap_err().to_string();
+
+        assert!(error.contains("'profiles'"), "error: {error}");
+        assert!(error.contains("'contexts'"), "error: {error}");
+    }
+
+    #[test]
+    fn rejects_legacy_default_profile_key() {
+        let error = load_text(r#"{"default_profile": "x"}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("'default_profile'"), "error: {error}");
+        assert!(error.contains("'current_context'"), "error: {error}");
+    }
+
+    #[test]
+    fn null_optional_fields_count_as_absent() {
+        let configuration = load_text(
+            r#"{"contexts": {"tls": {"brokers": ["tls:9093"], "auth": {"type": "tls", "ca_location": null}, "schema_registry": null}}}"#,
+        )
+        .unwrap();
+
+        let context = &configuration.contexts["tls"];
+        assert_eq!(
+            context.auth,
+            AuthConfig::Tls(TlsAuthConfig { ca_location: None })
+        );
+        assert_eq!(context.schema_registry, None);
+    }
+
+    #[test]
     fn file_overrides_environment() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("KAFCLI_CURRENT_CONTEXT", "from-env");
-            jail.create_file("config.toml", r#"current_context = "from-file""#)?;
+            jail.create_file("config.json", r#"{"current_context": "from-file"}"#)?;
             assert_eq!(
-                load_configuration(Path::new("config.toml"))
+                load_configuration(Path::new("config.json"))
                     .unwrap()
                     .current_context
                     .as_deref(),
@@ -202,9 +326,9 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     fn file_only_load_ignores_environment() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("KAFCLI_CURRENT_CONTEXT", "from-env");
-            jail.create_file("config.toml", "")?;
+            jail.create_file("config.json", "")?;
             assert_eq!(
-                load_configuration_file_only(Path::new("config.toml"))
+                load_configuration_file_only(Path::new("config.json"))
                     .unwrap()
                     .current_context,
                 None
@@ -217,9 +341,9 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     fn environment_fills_values_absent_from_file() {
         figment::Jail::expect_with(|jail| {
             jail.set_env("KAFCLI_CURRENT_CONTEXT", "from-env");
-            jail.create_file("config.toml", "")?;
+            jail.create_file("config.json", "")?;
             assert_eq!(
-                load_configuration(Path::new("config.toml"))
+                load_configuration(Path::new("config.json"))
                     .unwrap()
                     .current_context
                     .as_deref(),
@@ -230,101 +354,23 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     }
 
     #[test]
-    fn syntax_error_reports_position_without_echoing_line() {
-        let error = load_text(
-            r#"
-[contexts.eh]
-brokers = ["b:9093"]
-auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;SharedAccessKey=TOPSECRET }
-"#,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("line 4"));
-        assert!(!error.contains("TOPSECRET"));
-    }
-
-    #[test]
-    fn multi_line_inline_table_error_hides_secret() {
-        let error = load_text(
-            r#"
-[contexts.eh]
-brokers = ["b:9093"]
-auth = { type = "azure-connection-string", secret_ref = "Endpoint=TOPSECRET",
-}
-"#,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("secret reference"));
-        assert!(!error.contains("TOPSECRET"));
-    }
-
-    #[test]
-    fn escape_sequence_error_hides_secret() {
-        let error = load_text(
-            r#"
-[contexts.eh]
-brokers = ["b:9093"]
-auth = { type = "azure-connection-string", secret_ref = "x\eTOPSECRET" }
-"#,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(!error.contains("TOPSECRET"));
-    }
-
-    #[test]
-    fn bare_time_value_error_hides_secret() {
-        let error = load_text(
-            r#"
-[contexts.plain]
-brokers = ["b:9092"]
-auth = { type = "sasl-plain", username = 07:32, secret_ref = "env:TOPSECRET" }
-"#,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(!error.contains("TOPSECRET"));
-    }
-
-    #[test]
-    fn keeps_datetime_values_in_schema_registry() {
-        let configuration = load_text(
-            r#"
-[contexts.eh]
-brokers = ["b:9093"]
-auth = { type = "none" }
-
-[contexts.eh.schema_registry]
-issued = 2026-11-15T07:32:00Z
-"#,
-        )
-        .unwrap();
-
-        let registry = configuration.contexts["eh"]
-            .schema_registry
-            .clone()
-            .unwrap();
-        assert_eq!(
-            registry["issued"].as_datetime().unwrap().to_string(),
-            "2026-11-15T07:32:00Z"
-        );
+    fn context_and_config_variables_do_not_break_loading() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("KAFCLI_CONFIG", "/x");
+            jail.set_env("KAFCLI_CONTEXT", "dev");
+            jail.create_file("config.json", "{}")?;
+            assert_eq!(
+                load_configuration(Path::new("config.json")).unwrap(),
+                Configuration::default()
+            );
+            Ok(())
+        });
     }
 
     #[test]
     fn rejects_unknown_context_field() {
         let error = load_text(
-            r#"
-[contexts.prod]
-brokers = ["b:9092"]
-protectd = true
-auth = { type = "none" }
-"#,
+            r#"{"contexts": {"prod": {"brokers": ["b:9092"], "protectd": true, "auth": {"type": "none"}}}}"#,
         )
         .unwrap_err()
         .to_string();
@@ -335,11 +381,7 @@ auth = { type = "none" }
     #[test]
     fn rejects_unknown_auth_type_naming_the_type_field() {
         let error = load_text(
-            r#"
-[contexts.k]
-brokers = ["b:9092"]
-auth = { type = "kerberos" }
-"#,
+            r#"{"contexts": {"k": {"brokers": ["b:9092"], "auth": {"type": "kerberos"}}}}"#,
         )
         .unwrap_err()
         .to_string();
