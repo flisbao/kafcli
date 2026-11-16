@@ -20,6 +20,8 @@ pub enum CoreError {
     ContextValidation(String),
     #[error("kafka error: {0}")]
     Kafka(String),
+    #[error("topic '{0}' not found in cluster metadata")]
+    TopicNotFound(String),
     #[error("operation aborted: {0}")]
     OperationAborted(String),
     #[error("i/o error: {0}")]

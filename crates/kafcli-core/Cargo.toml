@@ -28,6 +28,7 @@ tracing.workspace = true
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 time = { workspace = true, features = ["parsing"] }
+kafcli-core = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true
