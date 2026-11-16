@@ -2,7 +2,7 @@ use crate::output::renderer::TableRenderable;
 use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
-use kafcli_core::config::model::Profile;
+use kafcli_core::config::model::ConnectionContext;
 use serde::Serialize;
 
 /// One profile as listed by `profile list`, `profile add` and `profile use`.
@@ -16,7 +16,7 @@ pub struct ProfileSummary {
 }
 
 impl ProfileSummary {
-    pub fn from_profile(name: &str, profile: &Profile, is_default: bool) -> Self {
+    pub fn from_profile(name: &str, profile: &ConnectionContext, is_default: bool) -> Self {
         Self {
             name: name.to_string(),
             brokers: profile.brokers.clone(),

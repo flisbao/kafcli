@@ -30,12 +30,12 @@ pub fn save_configuration(config_path: &Path, configuration: &Configuration) -> 
 mod tests {
     use super::*;
     use crate::config::loader::load_configuration;
-    use crate::config::model::{AuthConfig, Profile, SaslCredentialsConfig};
+    use crate::config::model::{AuthConfig, ConnectionContext, SaslCredentialsConfig};
     use crate::secret::reference::SecretReference;
     use std::collections::BTreeMap;
 
     fn sample_configuration() -> Configuration {
-        let secured_profile = Profile {
+        let secured_context = ConnectionContext {
             brokers: vec!["prd.example:9093".to_string()],
             auth: AuthConfig::SaslScram512(SaslCredentialsConfig {
                 username: "app".to_string(),
@@ -46,17 +46,17 @@ mod tests {
             protected: true,
             schema_registry: None,
         };
-        let local_profile = Profile {
+        let local_context = ConnectionContext {
             brokers: vec!["localhost:9092".to_string()],
             auth: AuthConfig::Plaintext,
             protected: false,
             schema_registry: None,
         };
         Configuration {
-            default_profile: Some("local".to_string()),
-            profiles: BTreeMap::from([
-                ("local".to_string(), local_profile),
-                ("prd".to_string(), secured_profile),
+            current_context: Some("local".to_string()),
+            contexts: BTreeMap::from([
+                ("local".to_string(), local_context),
+                ("prd".to_string(), secured_context),
             ]),
         }
     }

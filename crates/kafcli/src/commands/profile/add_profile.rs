@@ -4,10 +4,10 @@ use crate::output::profile_views::ProfileSummary;
 use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
-    AuthConfig, AzureConnectionStringConfig, MutualTlsAuthConfig, Profile, SaslCredentialsConfig,
-    TlsAuthConfig,
+    AuthConfig, AzureConnectionStringConfig, ConnectionContext, MutualTlsAuthConfig,
+    SaslCredentialsConfig, TlsAuthConfig,
 };
-use kafcli_core::config::validation::validate_profile;
+use kafcli_core::config::validation::validate_context;
 use kafcli_core::config::writer::save_configuration;
 use kafcli_core::secret::reference::SecretReference;
 
@@ -17,29 +17,29 @@ pub fn add_profile(
     arguments: &AddProfileArguments,
 ) -> anyhow::Result<ProfileSummary> {
     let mut configuration = load_configuration_file_only(&context.config_path)?;
-    if configuration.profiles.contains_key(&arguments.name) && !arguments.force {
+    if configuration.contexts.contains_key(&arguments.name) && !arguments.force {
         bail!(
             "profile '{}' already exists; pass --force to replace it",
             arguments.name
         );
     }
 
-    let profile = Profile {
+    let profile = ConnectionContext {
         brokers: arguments.brokers.clone(),
         auth: build_auth_config(arguments)?,
         protected: arguments.protected,
         schema_registry: None,
     };
-    validate_profile(&profile, false)?;
+    validate_context(&profile, false)?;
 
     let is_default = arguments.set_default
-        || configuration.default_profile.as_deref() == Some(arguments.name.as_str());
+        || configuration.current_context.as_deref() == Some(arguments.name.as_str());
     let summary = ProfileSummary::from_profile(&arguments.name, &profile, is_default);
     configuration
-        .profiles
+        .contexts
         .insert(arguments.name.clone(), profile);
     if arguments.set_default {
-        configuration.default_profile = Some(arguments.name.clone());
+        configuration.current_context = Some(arguments.name.clone());
     }
     save_configuration(&context.config_path, &configuration)?;
     Ok(summary)

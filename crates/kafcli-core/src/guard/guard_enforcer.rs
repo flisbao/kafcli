@@ -16,32 +16,32 @@ pub enum GuardOutcome {
 /// `OperationAborted` error when confirmation is missing or declined.
 pub fn enforce_guard(
     request: &GuardRequest,
-    profile_protected: bool,
+    context_protected: bool,
     prompter: &dyn ConfirmationPrompter,
 ) -> CoreResult<GuardOutcome> {
     match request.level {
         OperationLevel::Read => Ok(GuardOutcome::Proceed),
-        OperationLevel::Write => enforce_write_guard(request, profile_protected, prompter),
+        OperationLevel::Write => enforce_write_guard(request, context_protected, prompter),
         OperationLevel::Destructive => {
-            enforce_destructive_guard(request, profile_protected, prompter)
+            enforce_destructive_guard(request, context_protected, prompter)
         }
     }
 }
 
 fn enforce_write_guard(
     request: &GuardRequest,
-    profile_protected: bool,
+    context_protected: bool,
     prompter: &dyn ConfirmationPrompter,
 ) -> CoreResult<GuardOutcome> {
-    if !profile_protected || request.assume_yes {
+    if !context_protected || request.assume_yes {
         return Ok(GuardOutcome::Proceed);
     }
     if !prompter.is_interactive() {
         return Err(build_aborted_error(
-            "confirmation required on protected profile: pass --yes",
+            "confirmation required on protected context: pass --yes",
         ));
     }
-    let message = format!("{} on protected profile? [y/N]", request.description);
+    let message = format!("{} on protected context? [y/N]", request.description);
     if prompter.confirm_yes_no(&message)? {
         Ok(GuardOutcome::Proceed)
     } else {
@@ -51,18 +51,18 @@ fn enforce_write_guard(
 
 fn enforce_destructive_guard(
     request: &GuardRequest,
-    profile_protected: bool,
+    context_protected: bool,
     prompter: &dyn ConfirmationPrompter,
 ) -> CoreResult<GuardOutcome> {
     if !request.execute {
         return Ok(GuardOutcome::DryRun);
     }
-    if !profile_protected {
+    if !context_protected {
         return Ok(GuardOutcome::Proceed);
     }
     if !prompter.is_interactive() {
         return Err(build_aborted_error(
-            "typed confirmation required on protected profile; run interactively",
+            "typed confirmation required on protected context; run interactively",
         ));
     }
     let message = format!(
@@ -201,7 +201,7 @@ mod tests {
         );
         assert_eq!(
             aborted_message(result),
-            "confirmation required on protected profile: pass --yes"
+            "confirmation required on protected context: pass --yes"
         );
         assert_eq!(prompter.prompt_count(), 0);
     }
@@ -252,7 +252,7 @@ mod tests {
         );
         assert_eq!(
             aborted_message(result),
-            "typed confirmation required on protected profile; run interactively"
+            "typed confirmation required on protected context; run interactively"
         );
         assert_eq!(prompter.prompt_count(), 0);
     }

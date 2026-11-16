@@ -88,46 +88,46 @@ mod tests {
     }
 
     const ALL_AUTH_TYPES: &str = r#"
-[profiles.local]
+[contexts.local]
 brokers = ["localhost:9092"]
 auth = { type = "none" }
 
-[profiles.tls]
+[contexts.tls]
 brokers = ["tls:9093"]
 auth = { type = "tls", ca_location = "/etc/ca.pem" }
 
-[profiles.mtls]
+[contexts.mtls]
 brokers = ["mtls:9094"]
 auth = { type = "mtls", certificate_location = "/c.pem", key_location = "/k.pem", key_password_ref = "file:/run/kp" }
 
-[profiles.plain]
+[contexts.plain]
 brokers = ["plain:9095"]
 auth = { type = "sasl-plain", username = "app", secret_ref = "env:KAFKA_PASSWORD" }
 
-[profiles.scram256]
+[contexts.scram256]
 brokers = ["scram256:9096"]
 auth = { type = "sasl-scram-256", username = "app", secret_ref = "env:KAFKA_PASSWORD" }
 
-[profiles.scram512]
+[contexts.scram512]
 brokers = ["scram512:9097"]
 protected = true
 auth = { type = "sasl-scram-512", username = "app", secret_ref = "env:KAFKA_PASSWORD", use_tls = false }
 
-[profiles.eh]
+[contexts.eh]
 brokers = ["ns.servicebus.windows.net:9093"]
 auth = { type = "azure-connection-string", secret_ref = "keyring:kafcli/eh" }
 
-[profiles.eh.schema_registry]
+[contexts.eh.schema_registry]
 type = "azure"
 "#;
 
     #[test]
-    fn parses_profiles_for_every_wave_a_auth_type() {
+    fn parses_contexts_for_every_wave_a_auth_type() {
         let configuration = load_text(ALL_AUTH_TYPES).unwrap();
 
-        assert_eq!(configuration.profiles.len(), 7);
+        assert_eq!(configuration.contexts.len(), 7);
         assert_eq!(
-            configuration.profiles["scram512"].auth,
+            configuration.contexts["scram512"].auth,
             AuthConfig::SaslScram512(SaslCredentialsConfig {
                 username: "app".into(),
                 secret_ref: "env:KAFKA_PASSWORD".parse().unwrap(),
@@ -135,8 +135,8 @@ type = "azure"
                 use_tls: false,
             })
         );
-        assert!(configuration.profiles["scram512"].protected);
-        assert!(configuration.profiles["eh"].schema_registry.is_some());
+        assert!(configuration.contexts["scram512"].protected);
+        assert!(configuration.contexts["eh"].schema_registry.is_some());
     }
 
     #[test]
@@ -154,7 +154,7 @@ type = "azure"
     fn rejects_plaintext_password_field_without_echoing_it() {
         let error = load_text(
             r#"
-[profiles.plain]
+[contexts.plain]
 brokers = ["b:9092"]
 auth = { type = "sasl-plain", username = "u", secret_ref = "env:X", password = "hunter2" }
 "#,
@@ -170,7 +170,7 @@ auth = { type = "sasl-plain", username = "u", secret_ref = "env:X", password = "
     fn invalid_secret_reference_error_hides_value() {
         let error = load_text(
             r#"
-[profiles.eh]
+[contexts.eh]
 brokers = ["b:9093"]
 auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;SharedAccessKey=TOPSECRET" }
 "#,
@@ -185,12 +185,12 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     #[test]
     fn file_overrides_environment() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("KAFCLI_DEFAULT_PROFILE", "from-env");
-            jail.create_file("config.toml", r#"default_profile = "from-file""#)?;
+            jail.set_env("KAFCLI_CURRENT_CONTEXT", "from-env");
+            jail.create_file("config.toml", r#"current_context = "from-file""#)?;
             assert_eq!(
                 load_configuration(Path::new("config.toml"))
                     .unwrap()
-                    .default_profile
+                    .current_context
                     .as_deref(),
                 Some("from-file")
             );
@@ -201,12 +201,12 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     #[test]
     fn file_only_load_ignores_environment() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("KAFCLI_DEFAULT_PROFILE", "from-env");
+            jail.set_env("KAFCLI_CURRENT_CONTEXT", "from-env");
             jail.create_file("config.toml", "")?;
             assert_eq!(
                 load_configuration_file_only(Path::new("config.toml"))
                     .unwrap()
-                    .default_profile,
+                    .current_context,
                 None
             );
             Ok(())
@@ -216,12 +216,12 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     #[test]
     fn environment_fills_values_absent_from_file() {
         figment::Jail::expect_with(|jail| {
-            jail.set_env("KAFCLI_DEFAULT_PROFILE", "from-env");
+            jail.set_env("KAFCLI_CURRENT_CONTEXT", "from-env");
             jail.create_file("config.toml", "")?;
             assert_eq!(
                 load_configuration(Path::new("config.toml"))
                     .unwrap()
-                    .default_profile
+                    .current_context
                     .as_deref(),
                 Some("from-env")
             );
@@ -233,7 +233,7 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     fn syntax_error_reports_position_without_echoing_line() {
         let error = load_text(
             r#"
-[profiles.eh]
+[contexts.eh]
 brokers = ["b:9093"]
 auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;SharedAccessKey=TOPSECRET }
 "#,
@@ -249,7 +249,7 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=sb://ns/;Share
     fn multi_line_inline_table_error_hides_secret() {
         let error = load_text(
             r#"
-[profiles.eh]
+[contexts.eh]
 brokers = ["b:9093"]
 auth = { type = "azure-connection-string", secret_ref = "Endpoint=TOPSECRET",
 }
@@ -266,7 +266,7 @@ auth = { type = "azure-connection-string", secret_ref = "Endpoint=TOPSECRET",
     fn escape_sequence_error_hides_secret() {
         let error = load_text(
             r#"
-[profiles.eh]
+[contexts.eh]
 brokers = ["b:9093"]
 auth = { type = "azure-connection-string", secret_ref = "x\eTOPSECRET" }
 "#,
@@ -281,7 +281,7 @@ auth = { type = "azure-connection-string", secret_ref = "x\eTOPSECRET" }
     fn bare_time_value_error_hides_secret() {
         let error = load_text(
             r#"
-[profiles.plain]
+[contexts.plain]
 brokers = ["b:9092"]
 auth = { type = "sasl-plain", username = 07:32, secret_ref = "env:TOPSECRET" }
 "#,
@@ -296,17 +296,17 @@ auth = { type = "sasl-plain", username = 07:32, secret_ref = "env:TOPSECRET" }
     fn keeps_datetime_values_in_schema_registry() {
         let configuration = load_text(
             r#"
-[profiles.eh]
+[contexts.eh]
 brokers = ["b:9093"]
 auth = { type = "none" }
 
-[profiles.eh.schema_registry]
+[contexts.eh.schema_registry]
 issued = 2026-11-15T07:32:00Z
 "#,
         )
         .unwrap();
 
-        let registry = configuration.profiles["eh"]
+        let registry = configuration.contexts["eh"]
             .schema_registry
             .clone()
             .unwrap();
@@ -317,10 +317,10 @@ issued = 2026-11-15T07:32:00Z
     }
 
     #[test]
-    fn rejects_unknown_profile_field() {
+    fn rejects_unknown_context_field() {
         let error = load_text(
             r#"
-[profiles.prod]
+[contexts.prod]
 brokers = ["b:9092"]
 protectd = true
 auth = { type = "none" }
@@ -336,7 +336,7 @@ auth = { type = "none" }
     fn rejects_unknown_auth_type_naming_the_type_field() {
         let error = load_text(
             r#"
-[profiles.k]
+[contexts.k]
 brokers = ["b:9092"]
 auth = { type = "kerberos" }
 "#,

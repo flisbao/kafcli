@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub const AUDIT_LOG_FILE_NAME: &str = "audit.log";
 
-/// Owner-only access on unix: the log records what was run against which profile.
+/// Owner-only access on unix: the log records what was run against which context.
 #[cfg(unix)]
 const AUDIT_DIRECTORY_MODE: u32 = 0o700;
 #[cfg(unix)]

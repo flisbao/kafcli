@@ -1,9 +1,9 @@
 use crate::execution_context::ExecutionContext;
 use kafcli_core::config::loader::load_configuration;
-use kafcli_core::config::overrides::{ProfileOverrides, apply_profile_overrides};
-use kafcli_core::config::selection::select_profile;
+use kafcli_core::config::overrides::{ContextOverrides, apply_context_overrides};
+use kafcli_core::config::selection::select_context;
 use kafcli_core::connection::client_config_builder::ConnectionSettings;
-use kafcli_core::connection::connection_probe::{ConnectionReport, probe_profile_connection};
+use kafcli_core::connection::connection_probe::{ConnectionReport, probe_context_connection};
 use kafcli_core::secret::resolver::SecretResolver;
 use std::time::Duration;
 
@@ -20,15 +20,15 @@ pub fn test_profile(
 ) -> anyhow::Result<ConnectionReport> {
     let configuration = load_configuration(&context.config_path)?;
     let requested_name = name.or(context.global.profile.as_deref());
-    let selected = select_profile(&configuration, requested_name)?;
-    let overrides = ProfileOverrides {
+    let selected = select_context(&configuration, requested_name)?;
+    let overrides = ContextOverrides {
         brokers: context.global.brokers.clone(),
     };
-    let profile = apply_profile_overrides(selected.profile, &overrides);
+    let profile = apply_context_overrides(selected.context, &overrides);
     let settings = ConnectionSettings {
         insecure: context.global.insecure,
     };
-    let report = probe_profile_connection(&selected.name, &profile, resolver, &settings, timeout)?;
+    let report = probe_context_connection(&selected.name, &profile, resolver, &settings, timeout)?;
     Ok(report)
 }
 
@@ -37,7 +37,7 @@ mod tests {
     use super::*;
     use crate::cli::arguments::GlobalArguments;
     use crate::output::output_format::OutputFormat;
-    use kafcli_core::config::model::{AuthConfig, Configuration, Profile};
+    use kafcli_core::config::model::{AuthConfig, Configuration, ConnectionContext};
     use kafcli_core::config::writer::save_configuration;
     use kafcli_core::error::CoreError;
     use kafcli_core::secret::fixed_resolver::FixedSecretResolver;
@@ -48,10 +48,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("config.toml");
         let configuration = Configuration {
-            default_profile: None,
-            profiles: BTreeMap::from([(
+            current_context: None,
+            contexts: BTreeMap::from([(
                 "local".to_string(),
-                Profile {
+                ConnectionContext {
                     brokers: vec!["127.0.0.1:1".to_string()],
                     auth: AuthConfig::Plaintext,
                     protected: false,

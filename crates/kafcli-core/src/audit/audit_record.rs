@@ -18,7 +18,7 @@ pub struct AuditRecord {
     /// RFC 3339 UTC timestamp.
     pub timestamp: String,
     pub operator: String,
-    pub profile: String,
+    pub context: String,
     /// Command name, e.g. "offsets set".
     pub command: String,
     /// Target description, e.g. "group=pedidos-service topic=pedidos".
@@ -30,11 +30,11 @@ pub struct AuditRecord {
 
 impl AuditRecord {
     /// Builds a record stamped with the current UTC time and the operator from the environment.
-    pub fn new(profile: &str, command: &str, target: &str, outcome: AuditOutcome) -> Self {
+    pub fn new(context: &str, command: &str, target: &str, outcome: AuditOutcome) -> Self {
         Self {
             timestamp: format_current_timestamp(),
             operator: resolve_operator_name(),
-            profile: profile.to_string(),
+            context: context.to_string(),
             command: command.to_string(),
             target: target.to_string(),
             before: None,
@@ -111,5 +111,18 @@ mod tests {
         let record = AuditRecord::new("dev", "offsets set", "", AuditOutcome::DryRun);
         let value = serde_json::to_value(&record).unwrap();
         assert_eq!(value["outcome"], "dry-run");
+    }
+
+    #[test]
+    fn serializes_context_key_and_no_profile_key() {
+        let record = AuditRecord::new(
+            "prd",
+            "topics delete",
+            "topic=orders",
+            AuditOutcome::Executed,
+        );
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["context"], "prd");
+        assert!(value.get("profile").is_none());
     }
 }

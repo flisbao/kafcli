@@ -1,45 +1,45 @@
-use crate::config::model::{AuthConfig, Profile, SaslCredentialsConfig};
+use crate::config::model::{AuthConfig, ConnectionContext, SaslCredentialsConfig};
 use crate::error::{CoreError, CoreResult};
 
-/// Checks that `profile` may be used, given whether the user asked for `--insecure`.
+/// Checks that `context` may be used, given whether the user asked for `--insecure`.
 ///
-/// Protected profiles refuse plaintext authentication, disabled TLS and `--insecure`.
-pub fn validate_profile(profile: &Profile, insecure_requested: bool) -> CoreResult<()> {
-    if profile.brokers.is_empty() {
-        return Err(build_validation_error("profile has no brokers"));
+/// Protected contexts refuse plaintext authentication, disabled TLS and `--insecure`.
+pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -> CoreResult<()> {
+    if context.brokers.is_empty() {
+        return Err(build_validation_error("context has no brokers"));
     }
-    if profile
+    if context
         .brokers
         .iter()
         .any(|broker| broker.trim().is_empty())
     {
         return Err(build_validation_error(
-            "profile has an empty broker address",
+            "context has an empty broker address",
         ));
     }
-    if !profile.protected {
+    if !context.protected {
         return Ok(());
     }
-    if matches!(profile.auth, AuthConfig::Plaintext) {
+    if matches!(context.auth, AuthConfig::Plaintext) {
         return Err(build_validation_error(
-            "auth type 'none' is not allowed on a protected profile",
+            "auth type 'none' is not allowed on a protected context",
         ));
     }
     if insecure_requested {
         return Err(build_validation_error(
-            "--insecure is not allowed on a protected profile",
+            "--insecure is not allowed on a protected context",
         ));
     }
-    if sasl_credentials_of(&profile.auth).is_some_and(|credentials| !credentials.use_tls) {
+    if sasl_credentials_of(&context.auth).is_some_and(|credentials| !credentials.use_tls) {
         return Err(build_validation_error(
-            "use_tls = false is not allowed on a protected profile",
+            "use_tls = false is not allowed on a protected context",
         ));
     }
     Ok(())
 }
 
 fn build_validation_error(message: &str) -> CoreError {
-    CoreError::ProfileValidation(message.to_string())
+    CoreError::ContextValidation(message.to_string())
 }
 
 fn sasl_credentials_of(auth: &AuthConfig) -> Option<&SaslCredentialsConfig> {
@@ -60,8 +60,8 @@ mod tests {
     use crate::config::model::TlsAuthConfig;
     use crate::secret::reference::SecretReference;
 
-    fn profile(auth: AuthConfig, protected: bool) -> Profile {
-        Profile {
+    fn context(auth: AuthConfig, protected: bool) -> ConnectionContext {
+        ConnectionContext {
             brokers: vec!["broker:9093".to_string()],
             auth,
             protected,
@@ -69,8 +69,8 @@ mod tests {
         }
     }
 
-    fn scram512_profile(use_tls: bool) -> Profile {
-        profile(
+    fn scram512_context(use_tls: bool) -> ConnectionContext {
+        context(
             AuthConfig::SaslScram512(SaslCredentialsConfig {
                 username: "app".to_string(),
                 secret_ref: "env:KAFKA_PASSWORD".parse::<SecretReference>().unwrap(),
@@ -83,66 +83,66 @@ mod tests {
 
     fn validation_message(result: CoreResult<()>) -> String {
         match result {
-            Err(CoreError::ProfileValidation(message)) => message,
-            other => panic!("expected ProfileValidation, got {other:?}"),
+            Err(CoreError::ContextValidation(message)) => message,
+            other => panic!("expected ContextValidation, got {other:?}"),
         }
     }
 
     #[test]
-    fn rejects_plaintext_auth_on_protected_profile() {
-        let protected_plaintext = profile(AuthConfig::Plaintext, true);
+    fn rejects_plaintext_auth_on_protected_context() {
+        let protected_plaintext = context(AuthConfig::Plaintext, true);
 
-        let message = validation_message(validate_profile(&protected_plaintext, false));
+        let message = validation_message(validate_context(&protected_plaintext, false));
 
         assert_eq!(
             message,
-            "auth type 'none' is not allowed on a protected profile"
+            "auth type 'none' is not allowed on a protected context"
         );
     }
 
     #[test]
-    fn rejects_insecure_on_protected_profile() {
-        let protected_tls = profile(AuthConfig::Tls(TlsAuthConfig { ca_location: None }), true);
+    fn rejects_insecure_on_protected_context() {
+        let protected_tls = context(AuthConfig::Tls(TlsAuthConfig { ca_location: None }), true);
 
-        let message = validation_message(validate_profile(&protected_tls, true));
+        let message = validation_message(validate_context(&protected_tls, true));
 
-        assert_eq!(message, "--insecure is not allowed on a protected profile");
+        assert_eq!(message, "--insecure is not allowed on a protected context");
     }
 
     #[test]
-    fn rejects_disabled_tls_on_protected_profile() {
-        let message = validation_message(validate_profile(&scram512_profile(false), false));
+    fn rejects_disabled_tls_on_protected_context() {
+        let message = validation_message(validate_context(&scram512_context(false), false));
 
         assert_eq!(
             message,
-            "use_tls = false is not allowed on a protected profile"
+            "use_tls = false is not allowed on a protected context"
         );
     }
 
     #[test]
-    fn rejects_profile_without_brokers() {
-        let mut no_brokers = profile(AuthConfig::Plaintext, false);
+    fn rejects_context_without_brokers() {
+        let mut no_brokers = context(AuthConfig::Plaintext, false);
         no_brokers.brokers.clear();
 
-        let message = validation_message(validate_profile(&no_brokers, false));
+        let message = validation_message(validate_context(&no_brokers, false));
 
-        assert_eq!(message, "profile has no brokers");
+        assert_eq!(message, "context has no brokers");
     }
 
     #[test]
     fn rejects_empty_broker_address() {
-        let mut blank_broker = profile(AuthConfig::Plaintext, false);
+        let mut blank_broker = context(AuthConfig::Plaintext, false);
         blank_broker.brokers = vec!["a:9092".to_string(), "  ".to_string()];
 
-        let message = validation_message(validate_profile(&blank_broker, false));
+        let message = validation_message(validate_context(&blank_broker, false));
 
-        assert_eq!(message, "profile has an empty broker address");
+        assert_eq!(message, "context has an empty broker address");
     }
 
     #[test]
-    fn accepts_tls_profile_marked_protected() {
-        let protected_tls = profile(AuthConfig::Tls(TlsAuthConfig { ca_location: None }), true);
+    fn accepts_tls_context_marked_protected() {
+        let protected_tls = context(AuthConfig::Tls(TlsAuthConfig { ca_location: None }), true);
 
-        assert!(validate_profile(&protected_tls, false).is_ok());
+        assert!(validate_context(&protected_tls, false).is_ok());
     }
 }

@@ -17,7 +17,7 @@ pub struct CommandLineArguments {
 
 #[derive(clap::Args)]
 pub struct GlobalArguments {
-    /// Profile to use; defaults to `default_profile` from the configuration.
+    /// Profile to use; defaults to `current_context` from the configuration.
     #[arg(long, global = true)]
     pub profile: Option<String>,
     /// Output format of command results.

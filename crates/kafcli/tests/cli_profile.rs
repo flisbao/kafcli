@@ -10,7 +10,7 @@ fn build_kafcli_command(config_directory: &Path) -> Command {
     let mut command = Command::cargo_bin("kafcli").unwrap();
     command
         .env_remove("KAFCLI_CONFIG")
-        .env_remove("KAFCLI_DEFAULT_PROFILE")
+        .env_remove("KAFCLI_CURRENT_CONTEXT")
         .arg("--config")
         .arg(config_directory.join("config.toml"));
     command
@@ -116,7 +116,7 @@ fn add_rejects_plaintext_on_protected_profile() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "not allowed on a protected profile",
+            "not allowed on a protected context",
         ));
 }
 
@@ -158,7 +158,7 @@ fn show_never_prints_resolved_secret() {
 }
 
 #[test]
-fn use_sets_default_profile() {
+fn use_sets_current_context() {
     let directory = tempfile::tempdir().unwrap();
     add_plaintext_profile(directory.path(), "dev", &[]);
     add_plaintext_profile(directory.path(), "local", &[]);
@@ -187,7 +187,7 @@ fn unknown_profile_exits_with_failure() {
         .args(["profile", "show", "nope"])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("profile 'nope' not found"));
+        .stderr(predicate::str::contains("context 'nope' not found"));
 }
 
 #[test]
@@ -228,14 +228,14 @@ fn add_does_not_persist_environment_defaults() {
     let config_path = directory.path().join("config.toml");
 
     build_kafcli_command(directory.path())
-        .env("KAFCLI_DEFAULT_PROFILE", "prd")
+        .env("KAFCLI_CURRENT_CONTEXT", "prd")
         .args(["profile", "add", "dev", "--brokers", "localhost:9092"])
         .args(["--auth-type", "none"])
         .assert()
         .success();
 
     let written = std::fs::read_to_string(config_path).unwrap();
-    assert!(!written.contains("default_profile"), "written: {written}");
+    assert!(!written.contains("current_context"), "written: {written}");
 }
 
 #[test]
@@ -246,14 +246,14 @@ fn use_does_not_persist_environment_defaults() {
     add_plaintext_profile(directory.path(), "local", &[]);
 
     build_kafcli_command(directory.path())
-        .env("KAFCLI_DEFAULT_PROFILE", "prd")
+        .env("KAFCLI_CURRENT_CONTEXT", "prd")
         .args(["profile", "use", "local"])
         .assert()
         .success();
 
     let written = std::fs::read_to_string(config_path).unwrap();
     assert!(
-        written.contains("default_profile = \"local\""),
+        written.contains("current_context = \"local\""),
         "written: {written}"
     );
     assert!(!written.contains("prd"), "written: {written}");
@@ -315,6 +315,6 @@ fn add_rejects_empty_broker_entries() {
         .assert()
         .code(1)
         .stderr(predicate::str::contains(
-            "profile has an empty broker address",
+            "context has an empty broker address",
         ));
 }
