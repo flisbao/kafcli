@@ -7,28 +7,34 @@ use kafcli_core::connection::connection_probe::{ConnectionReport, probe_context_
 use kafcli_core::secret::resolver::SecretResolver;
 use std::time::Duration;
 
-/// Connects to the profile's brokers and reports what the credentials can see.
+/// Connects to the context's brokers and reports what the credentials can see.
 ///
-/// Without a name, the `--profile` flag and then the configured default are used.
-/// `--brokers` replaces the profile's brokers for this run only.
+/// Without a name, the `--context` flag and then the current context are used.
+/// `--brokers` replaces the context's brokers for this run only.
 /// The secret resolver is injected by the composition point (`main.rs`).
-pub fn test_profile(
-    context: &ExecutionContext,
+pub fn test_context(
+    execution: &ExecutionContext,
     resolver: &dyn SecretResolver,
     name: Option<&str>,
     timeout: Duration,
 ) -> anyhow::Result<ConnectionReport> {
-    let configuration = load_configuration(&context.config_path)?;
-    let requested_name = name.or(context.global.profile.as_deref());
+    let configuration = load_configuration(&execution.config_path)?;
+    let requested_name = name.or(execution.global.context.as_deref());
     let selected = select_context(&configuration, requested_name)?;
     let overrides = ContextOverrides {
-        brokers: context.global.brokers.clone(),
+        brokers: execution.global.brokers.clone(),
     };
-    let profile = apply_context_overrides(selected.context, &overrides);
+    let connection_context = apply_context_overrides(selected.context, &overrides);
     let settings = ConnectionSettings {
-        insecure: context.global.insecure,
+        insecure: execution.global.insecure,
     };
-    let report = probe_context_connection(&selected.name, &profile, resolver, &settings, timeout)?;
+    let report = probe_context_connection(
+        &selected.name,
+        &connection_context,
+        resolver,
+        &settings,
+        timeout,
+    )?;
     Ok(report)
 }
 
@@ -60,10 +66,10 @@ mod tests {
             )]),
         };
         save_configuration(&config_path, &configuration).unwrap();
-        let context = ExecutionContext {
+        let execution = ExecutionContext {
             config_path,
             global: GlobalArguments {
-                profile: None,
+                context: None,
                 output: OutputFormat::Table,
                 verbosity: 0,
                 config: None,
@@ -72,8 +78,8 @@ mod tests {
             },
         };
 
-        let error = test_profile(
-            &context,
+        let error = test_context(
+            &execution,
             &FixedSecretResolver::returning("unused"),
             Some("local"),
             Duration::from_secs(2),

@@ -30,6 +30,7 @@ fn build_kafcli_command(config_directory: &Path) -> Command {
     let mut command = Command::cargo_bin("kafcli").unwrap();
     command
         .env_remove("KAFCLI_CONFIG")
+        .env_remove("KAFCLI_CONTEXT")
         .env_remove("KAFCLI_CURRENT_CONTEXT")
         .env("XDG_STATE_HOME", config_directory.join("state"))
         .arg("--config")
@@ -41,9 +42,9 @@ fn parse_stdout_json(assertion: &Assert) -> Value {
     serde_json::from_slice(&assertion.get_output().stdout).unwrap()
 }
 
-fn add_profile(config_directory: &Path, name: &str, arguments: &[&str]) {
+fn add_context(config_directory: &Path, name: &str, arguments: &[&str]) {
     build_kafcli_command(config_directory)
-        .args(["profile", "add", name])
+        .args(["context", "add", name])
         .args(arguments)
         .assert()
         .success();
@@ -53,14 +54,14 @@ fn add_profile(config_directory: &Path, name: &str, arguments: &[&str]) {
 #[ignore = "requires docker compose fixtures"]
 fn connects_with_plaintext() {
     let directory = tempfile::tempdir().unwrap();
-    add_profile(
+    add_context(
         directory.path(),
         "plain",
         &["--brokers", PLAINTEXT_BROKER, "--auth-type", "none"],
     );
 
     let assertion = build_kafcli_command(directory.path())
-        .args(["--output", "json", "profile", "test", "plain"])
+        .args(["--output", "json", "context", "test", "plain"])
         .assert()
         .success();
 
@@ -71,7 +72,7 @@ fn connects_with_plaintext() {
 #[ignore = "requires docker compose fixtures"]
 fn connects_with_scram_and_reports_principal() {
     let directory = tempfile::tempdir().unwrap();
-    add_profile(
+    add_context(
         directory.path(),
         "scram",
         &[
@@ -89,7 +90,7 @@ fn connects_with_scram_and_reports_principal() {
 
     let assertion = build_kafcli_command(directory.path())
         .env(SCRAM_PASSWORD_VARIABLE, SCRAM_PASSWORD)
-        .args(["--output", "json", "profile", "test", "scram"])
+        .args(["--output", "json", "context", "test", "scram"])
         .assert()
         .success();
 
@@ -103,7 +104,7 @@ fn connects_with_scram_and_reports_principal() {
 #[ignore = "requires docker compose fixtures"]
 fn rejects_wrong_scram_password() {
     let directory = tempfile::tempdir().unwrap();
-    add_profile(
+    add_context(
         directory.path(),
         "scram",
         &[
@@ -119,18 +120,18 @@ fn rejects_wrong_scram_password() {
         ],
     );
 
-    // Positive control: the same profile succeeds with the right password, so a later failure
+    // Positive control: the same context succeeds with the right password, so a later failure
     // is caused by the password and not by fixtures that are down or on another port.
     build_kafcli_command(directory.path())
         .env(SCRAM_PASSWORD_VARIABLE, SCRAM_PASSWORD)
-        .args(["profile", "test", "scram", "--timeout-seconds", "5"])
+        .args(["context", "test", "scram", "--timeout-seconds", "5"])
         .assert()
         .success();
 
     let started = Instant::now();
     let assertion = build_kafcli_command(directory.path())
         .env(SCRAM_PASSWORD_VARIABLE, "wrong-password")
-        .args(["profile", "test", "scram", "--timeout-seconds", "5"])
+        .args(["context", "test", "scram", "--timeout-seconds", "5"])
         .assert()
         .code(1);
 
@@ -146,7 +147,7 @@ fn connects_with_mutual_tls() {
     let ca_location = locate_certificate_file("ca.pem");
     let client_certificate = locate_certificate_file("client.pem");
     let client_key = locate_certificate_file("client.key");
-    add_profile(
+    add_context(
         directory.path(),
         "mtls",
         &[
@@ -164,7 +165,7 @@ fn connects_with_mutual_tls() {
     );
 
     let assertion = build_kafcli_command(directory.path())
-        .args(["--output", "json", "profile", "test", "mtls"])
+        .args(["--output", "json", "context", "test", "mtls"])
         .assert()
         .success();
 
@@ -175,7 +176,7 @@ fn connects_with_mutual_tls() {
 #[ignore = "requires docker compose fixtures"]
 fn never_leaks_secret_in_any_output() {
     let directory = tempfile::tempdir().unwrap();
-    add_profile(
+    add_context(
         directory.path(),
         "scram",
         &[
@@ -194,12 +195,12 @@ fn never_leaks_secret_in_any_output() {
     // Output is checked for leaks before the exit code, so a leak is reported even when the run fails.
     let assertion = build_kafcli_command(directory.path())
         .env(SCRAM_PASSWORD_VARIABLE, SCRAM_PASSWORD)
-        .args(["-vv", "--output", "json", "profile", "test", "scram"])
+        .args(["-vv", "--output", "json", "context", "test", "scram"])
         .assert();
 
     let mut captured = assertion.get_output().stdout.clone();
     captured.extend_from_slice(&assertion.get_output().stderr);
-    // `profile test` writes no audit log today, so this state-dir scan is a forward guard that
+    // `context test` writes no audit log today, so this state-dir scan is a forward guard that
     // starts to matter once an audit writer exists.
     captured.extend_from_slice(&read_all_files(&directory.path().join("state")));
     assert!(!String::from_utf8_lossy(&captured).contains(SCRAM_PASSWORD));

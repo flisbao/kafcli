@@ -1,4 +1,4 @@
-use crate::cli::profile_arguments::ProfileCommand;
+use crate::cli::context_arguments::ContextCommand;
 use crate::output::output_format::OutputFormat;
 use std::path::PathBuf;
 
@@ -17,9 +17,9 @@ pub struct CommandLineArguments {
 
 #[derive(clap::Args)]
 pub struct GlobalArguments {
-    /// Profile to use; defaults to `current_context` from the configuration.
-    #[arg(long, global = true)]
-    pub profile: Option<String>,
+    /// Context to use; defaults to the current context (see 'kafcli context use').
+    #[arg(long, global = true, env = "KAFCLI_CONTEXT")]
+    pub context: Option<String>,
     /// Output format of command results.
     #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Table)]
     pub output: OutputFormat,
@@ -29,19 +29,19 @@ pub struct GlobalArguments {
     /// Configuration file; overrides the default location.
     #[arg(long, global = true, env = "KAFCLI_CONFIG")]
     pub config: Option<PathBuf>,
-    /// Broker addresses that override the profile's brokers.
+    /// Broker addresses that override the context's brokers.
     #[arg(long, global = true, value_delimiter = ',')]
     pub brokers: Option<Vec<String>>,
-    /// Allows TLS settings that a profile would otherwise refuse.
+    /// Allows TLS settings that a context would otherwise refuse.
     #[arg(long, global = true)]
     pub insecure: bool,
 }
 
 #[derive(clap::Subcommand)]
 pub enum TopLevelCommand {
-    /// Manage connection profiles
-    Profile {
+    /// Manage connection contexts
+    Context {
         #[command(subcommand)]
-        command: ProfileCommand,
+        command: ContextCommand,
     },
 }

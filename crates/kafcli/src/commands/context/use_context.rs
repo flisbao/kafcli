@@ -1,16 +1,16 @@
 use crate::execution_context::ExecutionContext;
-use crate::output::profile_views::ProfileSummary;
+use crate::output::context_views::ContextSummary;
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::selection::select_context;
 use kafcli_core::config::writer::save_configuration;
 
-/// Makes `name` the default profile. Fails when no profile has that name.
-pub fn use_profile(context: &ExecutionContext, name: &str) -> anyhow::Result<ProfileSummary> {
-    let mut configuration = load_configuration_file_only(&context.config_path)?;
+/// Makes `name` the current context. Fails when no context has that name.
+pub fn use_context(execution: &ExecutionContext, name: &str) -> anyhow::Result<ContextSummary> {
+    let mut configuration = load_configuration_file_only(&execution.config_path)?;
     let selected = select_context(&configuration, Some(name))?;
     configuration.current_context = Some(selected.name.clone());
-    save_configuration(&context.config_path, &configuration)?;
-    Ok(ProfileSummary::from_profile(
+    save_configuration(&execution.config_path, &configuration)?;
+    Ok(ContextSummary::from_context(
         &selected.name,
         &selected.context,
         true,

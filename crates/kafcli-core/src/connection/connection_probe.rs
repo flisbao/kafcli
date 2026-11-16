@@ -9,8 +9,6 @@ use std::time::Duration;
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionReport {
-    /// Serialized as `profile_name` so the CLI JSON output stays unchanged until the CLI rename.
-    #[serde(rename = "profile_name")]
     pub context_name: String,
     pub auth_type: String,
     pub principal: Option<String>,

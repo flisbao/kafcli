@@ -1,23 +1,23 @@
 use crate::execution_context::ExecutionContext;
-use crate::output::profile_views::ProfileDetailView;
+use crate::output::context_views::ContextDetailView;
 use kafcli_core::auth::provider_factory::create_auth_provider;
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::config::model::AuthConfig;
 use kafcli_core::config::selection::select_context;
 use kafcli_core::secret::reference::SecretReference;
 
-/// Describes one profile. Secrets are listed by reference only and never resolved.
+/// Describes one context. Secrets are listed by reference only and never resolved.
 ///
-/// Without a name, the `--profile` flag and then the configured default are used.
-pub fn show_profile(
-    context: &ExecutionContext,
+/// Without a name, the `--context` flag and then the current context are used.
+pub fn show_context(
+    execution: &ExecutionContext,
     name: Option<&str>,
-) -> anyhow::Result<ProfileDetailView> {
-    let configuration = load_configuration(&context.config_path)?;
-    let requested_name = name.or(context.global.profile.as_deref());
+) -> anyhow::Result<ContextDetailView> {
+    let configuration = load_configuration(&execution.config_path)?;
+    let requested_name = name.or(execution.global.context.as_deref());
     let selected = select_context(&configuration, requested_name)?;
     let principal = create_auth_provider(&selected.context.auth).describe_principal();
-    Ok(ProfileDetailView {
+    Ok(ContextDetailView {
         name: selected.name,
         brokers: selected.context.brokers.clone(),
         auth_type: selected.context.auth.type_name().to_string(),

@@ -13,7 +13,7 @@ impl TableRenderable for ConnectionReport {
         *table.style_mut() = UTF8_FULL_CONDENSED;
         table.set_header(vec![Cell::new("FIELD"), Cell::new("VALUE")]);
         table.add_row(vec![
-            Cell::new("profile"),
+            Cell::new("context"),
             Cell::new(sanitize_for_terminal(&self.context_name)),
         ]);
         table.add_row(vec![
