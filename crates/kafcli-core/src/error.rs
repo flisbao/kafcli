@@ -8,16 +8,16 @@ use thiserror::Error;
 pub enum CoreError {
     #[error("configuration error: {0}")]
     Configuration(String),
-    #[error("profile '{0}' not found")]
-    ProfileNotFound(String),
-    #[error("no profile selected: pass --profile or set default_profile")]
-    NoProfileSelected,
+    #[error("context '{0}' not found")]
+    ContextNotFound(String),
+    #[error("no context selected: pass --context or run 'kafcli context use <name>'")]
+    NoContextSelected,
     #[error("invalid secret reference: {0}")]
     InvalidSecretReference(String),
     #[error("secret could not be resolved: {0}")]
     SecretResolution(String),
-    #[error("profile validation failed: {0}")]
-    ProfileValidation(String),
+    #[error("context validation failed: {0}")]
+    ContextValidation(String),
     #[error("kafka error: {0}")]
     Kafka(String),
     #[error("operation aborted: {0}")]

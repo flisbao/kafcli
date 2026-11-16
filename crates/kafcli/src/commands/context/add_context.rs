@@ -1,51 +1,55 @@
-use crate::cli::profile_arguments::{AddProfileArguments, AuthTypeArgument};
+use crate::cli::context_arguments::{AddContextArguments, AuthTypeArgument};
 use crate::execution_context::ExecutionContext;
-use crate::output::profile_views::ProfileSummary;
+use crate::output::context_views::ContextSummary;
+use crate::output::production_warning::warn_if_production;
 use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
-    AuthConfig, AzureConnectionStringConfig, MutualTlsAuthConfig, Profile, SaslCredentialsConfig,
-    TlsAuthConfig,
+    AuthConfig, AzureConnectionStringConfig, ConnectionContext, MutualTlsAuthConfig,
+    SaslCredentialsConfig, TlsAuthConfig,
 };
-use kafcli_core::config::validation::validate_profile;
+use kafcli_core::config::validation::validate_context;
 use kafcli_core::config::writer::save_configuration;
 use kafcli_core::secret::reference::SecretReference;
 
-/// Adds a profile after validating it. An existing name is replaced only with `--force`.
-pub fn add_profile(
-    context: &ExecutionContext,
-    arguments: &AddProfileArguments,
-) -> anyhow::Result<ProfileSummary> {
-    let mut configuration = load_configuration_file_only(&context.config_path)?;
-    if configuration.profiles.contains_key(&arguments.name) && !arguments.force {
+/// Adds a context after validating it. An existing name is replaced only with `--force`.
+pub fn add_context(
+    execution: &ExecutionContext,
+    arguments: &AddContextArguments,
+) -> anyhow::Result<ContextSummary> {
+    let mut configuration = load_configuration_file_only(&execution.config_path)?;
+    if configuration.contexts.contains_key(&arguments.name) && !arguments.force {
         bail!(
-            "profile '{}' already exists; pass --force to replace it",
+            "context '{}' already exists; pass --force to replace it",
             arguments.name
         );
     }
 
-    let profile = Profile {
+    let connection_context = ConnectionContext {
         brokers: arguments.brokers.clone(),
         auth: build_auth_config(arguments)?,
         protected: arguments.protected,
         schema_registry: None,
     };
-    validate_profile(&profile, false)?;
+    validate_context(&connection_context, false)?;
 
-    let is_default = arguments.set_default
-        || configuration.default_profile.as_deref() == Some(arguments.name.as_str());
-    let summary = ProfileSummary::from_profile(&arguments.name, &profile, is_default);
+    let is_current = arguments.use_after_add
+        || configuration.current_context.as_deref() == Some(arguments.name.as_str());
+    let summary = ContextSummary::from_context(&arguments.name, &connection_context, is_current);
     configuration
-        .profiles
-        .insert(arguments.name.clone(), profile);
-    if arguments.set_default {
-        configuration.default_profile = Some(arguments.name.clone());
+        .contexts
+        .insert(arguments.name.clone(), connection_context.clone());
+    if arguments.use_after_add {
+        configuration.current_context = Some(arguments.name.clone());
     }
-    save_configuration(&context.config_path, &configuration)?;
+    save_configuration(&execution.config_path, &configuration)?;
+    if arguments.use_after_add {
+        warn_if_production(&arguments.name, &connection_context);
+    }
     Ok(summary)
 }
 
-fn build_auth_config(arguments: &AddProfileArguments) -> anyhow::Result<AuthConfig> {
+fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConfig> {
     let auth_type = arguments.auth_type;
     match auth_type {
         AuthTypeArgument::None => Ok(AuthConfig::Plaintext),
@@ -87,7 +91,7 @@ fn build_auth_config(arguments: &AddProfileArguments) -> anyhow::Result<AuthConf
 }
 
 fn build_sasl_credentials(
-    arguments: &AddProfileArguments,
+    arguments: &AddContextArguments,
 ) -> anyhow::Result<SaslCredentialsConfig> {
     let auth_type = arguments.auth_type;
     let secret_text = require_value(&arguments.secret_ref, "--secret-ref", auth_type)?;

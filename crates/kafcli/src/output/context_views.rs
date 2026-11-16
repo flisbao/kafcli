@@ -2,39 +2,39 @@ use crate::output::renderer::TableRenderable;
 use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
-use kafcli_core::config::model::Profile;
+use kafcli_core::config::model::ConnectionContext;
 use serde::Serialize;
 
-/// One profile as listed by `profile list`, `profile add` and `profile use`.
+/// One context as listed by `context list`, `context add` and `context use`.
 #[derive(Serialize)]
-pub struct ProfileSummary {
+pub struct ContextSummary {
     pub name: String,
     pub brokers: Vec<String>,
     pub auth_type: String,
     pub protected: bool,
-    pub is_default: bool,
+    pub is_current: bool,
 }
 
-impl ProfileSummary {
-    pub fn from_profile(name: &str, profile: &Profile, is_default: bool) -> Self {
+impl ContextSummary {
+    pub fn from_context(name: &str, context: &ConnectionContext, is_current: bool) -> Self {
         Self {
             name: name.to_string(),
-            brokers: profile.brokers.clone(),
-            auth_type: profile.auth.type_name().to_string(),
-            protected: profile.protected,
-            is_default,
+            brokers: context.brokers.clone(),
+            auth_type: context.auth.type_name().to_string(),
+            protected: context.protected,
+            is_current,
         }
     }
 }
 
 #[derive(Serialize)]
-pub struct ProfileListView {
-    pub profiles: Vec<ProfileSummary>,
+pub struct ContextListView {
+    pub contexts: Vec<ContextSummary>,
 }
 
-/// One profile in detail, as shown by `profile show`. Secret references are listed, never resolved.
+/// One context in detail, as shown by `context show`. Secret references are listed, never resolved.
 #[derive(Serialize)]
-pub struct ProfileDetailView {
+pub struct ContextDetailView {
     pub name: String,
     pub brokers: Vec<String>,
     pub auth_type: String,
@@ -44,22 +44,28 @@ pub struct ProfileDetailView {
     pub has_schema_registry: bool,
 }
 
-impl TableRenderable for ProfileSummary {
+/// The name of the current context, as printed by `context current`.
+#[derive(Serialize)]
+pub struct CurrentContextView {
+    pub name: String,
+}
+
+impl TableRenderable for ContextSummary {
     fn render_table(&self) -> String {
         build_summary_table([self]).to_string()
     }
 }
 
-impl TableRenderable for ProfileListView {
+impl TableRenderable for ContextListView {
     fn render_table(&self) -> String {
-        if self.profiles.is_empty() {
-            return "no profiles configured".to_string();
+        if self.contexts.is_empty() {
+            return "no contexts configured".to_string();
         }
-        build_summary_table(&self.profiles).to_string()
+        build_summary_table(&self.contexts).to_string()
     }
 }
 
-impl TableRenderable for ProfileDetailView {
+impl TableRenderable for ContextDetailView {
     fn render_table(&self) -> String {
         let mut table = build_table(&["FIELD", "VALUE"]);
         table.add_row(vec![
@@ -97,15 +103,22 @@ impl TableRenderable for ProfileDetailView {
     }
 }
 
-fn build_summary_table<'a>(summaries: impl IntoIterator<Item = &'a ProfileSummary>) -> Table {
-    let mut table = build_table(&["NAME", "BROKERS", "AUTH", "PROTECTED", "DEFAULT"]);
+impl TableRenderable for CurrentContextView {
+    fn render_table(&self) -> String {
+        sanitize_for_terminal(&self.name)
+    }
+}
+
+fn build_summary_table<'a>(summaries: impl IntoIterator<Item = &'a ContextSummary>) -> Table {
+    let mut table = build_table(&["CURRENT", "NAME", "BROKERS", "AUTH", "ENVIRONMENT"]);
     for summary in summaries {
+        let environment = if summary.protected { "PRODUCTION" } else { "-" };
         table.add_row(vec![
+            Cell::new(if summary.is_current { "*" } else { "" }),
             Cell::new(sanitize_for_terminal(&summary.name)),
             Cell::new(sanitize_for_terminal(&summary.brokers.join(", "))),
             Cell::new(sanitize_for_terminal(&summary.auth_type)),
-            Cell::new(summary.protected),
-            Cell::new(summary.is_default),
+            Cell::new(environment),
         ]);
     }
     table
@@ -131,14 +144,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profile_list_neutralizes_terminal_control_characters() {
-        let view = ProfileListView {
-            profiles: vec![ProfileSummary {
+    fn context_list_neutralizes_terminal_control_characters() {
+        let view = ContextListView {
+            contexts: vec![ContextSummary {
                 name: "\x1b[2Jdev".to_string(),
                 brokers: vec!["broker\u{9b}31m:9092".to_string()],
                 auth_type: "none".to_string(),
                 protected: false,
-                is_default: true,
+                is_current: true,
             }],
         };
 
@@ -147,5 +160,14 @@ mod tests {
         assert!(!rendered.chars().any(|character| character == '\x1b'));
         assert!(!rendered.contains('\u{9b}'));
         assert!(rendered.contains("?[2Jdev"));
+    }
+
+    #[test]
+    fn current_context_view_renders_bare_sanitized_name() {
+        let view = CurrentContextView {
+            name: "\x1b[2Jdev".to_string(),
+        };
+
+        assert_eq!(view.render_table(), "?[2Jdev");
     }
 }

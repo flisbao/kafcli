@@ -9,8 +9,10 @@ mod prompt;
 use clap::Parser;
 use clap::error::ErrorKind;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
-use cli::profile_arguments::ProfileCommand;
-use commands::profile::{add_profile, list_profiles, show_profile, test_profile, use_profile};
+use cli::context_arguments::ContextCommand;
+use commands::context::{
+    add_context, list_contexts, show_context, show_current_context, test_context, use_context,
+};
 use execution_context::ExecutionContext;
 use exit_code::{KafcliExitCode, resolve_exit_code};
 use kafcli_core::secret::composite_resolver::CompositeSecretResolver;
@@ -74,26 +76,29 @@ fn write_result_to_stdout(rendered: &str) -> ExitCode {
 
 fn run(arguments: CommandLineArguments, resolver: &dyn SecretResolver) -> anyhow::Result<String> {
     let output_format = arguments.global.output;
-    let context = ExecutionContext::from_global_arguments(arguments.global)?;
+    let execution = ExecutionContext::from_global_arguments(arguments.global)?;
     let rendered = match arguments.command {
-        TopLevelCommand::Profile { command } => match command {
-            ProfileCommand::List => render_output(&list_profiles(&context)?, output_format)?,
-            ProfileCommand::Show { name } => {
-                render_output(&show_profile(&context, name.as_deref())?, output_format)?
+        TopLevelCommand::Context { command } => match command {
+            ContextCommand::List => render_output(&list_contexts(&execution)?, output_format)?,
+            ContextCommand::Show { name } => {
+                render_output(&show_context(&execution, name.as_deref())?, output_format)?
             }
-            ProfileCommand::Add(add_arguments) => {
-                render_output(&add_profile(&context, &add_arguments)?, output_format)?
+            ContextCommand::Add(add_arguments) => {
+                render_output(&add_context(&execution, &add_arguments)?, output_format)?
             }
-            ProfileCommand::Use { name } => {
-                render_output(&use_profile(&context, &name)?, output_format)?
+            ContextCommand::Use { name } => {
+                render_output(&use_context(&execution, &name)?, output_format)?
             }
-            ProfileCommand::Test {
+            ContextCommand::Current => {
+                render_output(&show_current_context(&execution)?, output_format)?
+            }
+            ContextCommand::Test {
                 name,
                 timeout_seconds,
             } => {
                 let timeout = Duration::from_secs(timeout_seconds);
                 render_output(
-                    &test_profile(&context, resolver, name.as_deref(), timeout)?,
+                    &test_context(&execution, resolver, name.as_deref(), timeout)?,
                     output_format,
                 )?
             }

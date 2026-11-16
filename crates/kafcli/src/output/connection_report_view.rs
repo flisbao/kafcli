@@ -13,8 +13,8 @@ impl TableRenderable for ConnectionReport {
         *table.style_mut() = UTF8_FULL_CONDENSED;
         table.set_header(vec![Cell::new("FIELD"), Cell::new("VALUE")]);
         table.add_row(vec![
-            Cell::new("profile"),
-            Cell::new(sanitize_for_terminal(&self.profile_name)),
+            Cell::new("context"),
+            Cell::new(sanitize_for_terminal(&self.context_name)),
         ]);
         table.add_row(vec![
             Cell::new("auth_type"),
@@ -56,7 +56,7 @@ mod tests {
 
     fn report_with_topics(topic_count: usize, principal: Option<&str>) -> ConnectionReport {
         ConnectionReport {
-            profile_name: "dev".to_string(),
+            context_name: "dev".to_string(),
             auth_type: "none".to_string(),
             principal: principal.map(str::to_string),
             broker_count: 1,

@@ -7,7 +7,7 @@ use super::sasl_scram_provider::{SaslScramAuthProvider, ScramMechanism};
 use super::tls_provider::TlsAuthProvider;
 use crate::config::model::AuthConfig;
 
-/// Creates the provider for a profile's authentication mode.
+/// Creates the provider for a context's authentication mode.
 /// Exhaustive on purpose: a new `AuthConfig` variant must get a provider here.
 pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
     match auth {

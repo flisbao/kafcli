@@ -1,35 +1,40 @@
 use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
-pub enum ProfileCommand {
-    /// List configured profiles
-    #[command(after_help = "Examples:\n  kafcli profile list\n  kafcli --output json profile list")]
+pub enum ContextCommand {
+    /// List configured contexts
+    #[command(after_help = "Examples:\n  kafcli context list\n  kafcli --output json context list")]
     List,
-    /// Show one profile without resolving its secrets
+    /// Show one context without resolving its secrets
     #[command(
-        after_help = "Examples:\n  kafcli profile show prd\n  kafcli profile show\n  kafcli --output json profile show prd"
+        after_help = "Examples:\n  kafcli context show prd\n  kafcli context show\n  kafcli --output json context show prd"
     )]
     Show {
-        /// Profile name; defaults to the selected profile
+        /// Context name; defaults to the selected context
         name: Option<String>,
     },
-    /// Add a profile to the configuration
+    /// Add a context to the configuration
     #[command(
-        after_help = "Examples:\n  kafcli profile add dev --brokers localhost:9092 --auth-type none --set-default\n  kafcli profile add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected"
+        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected"
     )]
-    Add(AddProfileArguments),
-    /// Make a profile the default
-    #[command(after_help = "Examples:\n  kafcli profile use prd")]
+    Add(AddContextArguments),
+    /// Make a context the current one
+    #[command(after_help = "Examples:\n  kafcli context use prd")]
     Use {
-        /// Profile name to make the default
+        /// Context name to make the current one
         name: String,
     },
-    /// Test the connection of a profile
+    /// Print the name of the current context
     #[command(
-        after_help = "Examples:\n  kafcli profile test dev\n  kafcli profile test prd --timeout-seconds 5\n  kafcli --profile prd profile test"
+        after_help = "Examples:\n  kafcli context current\n  kafcli --output json context current"
+    )]
+    Current,
+    /// Test the connection of a context
+    #[command(
+        after_help = "Examples:\n  kafcli context test dev\n  kafcli context test prd --timeout-seconds 5\n  kafcli --context prd context test"
     )]
     Test {
-        /// Profile name; defaults to the selected profile
+        /// Context name; defaults to the selected context
         name: Option<String>,
         /// Seconds to wait for the broker before giving up (1 to 3600)
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=3600))]
@@ -38,13 +43,13 @@ pub enum ProfileCommand {
 }
 
 #[derive(clap::Args)]
-pub struct AddProfileArguments {
-    /// Name of the new profile
+pub struct AddContextArguments {
+    /// Name of the new context
     pub name: String,
     /// Broker addresses, comma separated (host:port)
     #[arg(long, value_delimiter = ',', required = true)]
     pub brokers: Vec<String>,
-    /// Authentication mode of the profile
+    /// Authentication mode of the context
     #[arg(long, value_enum)]
     pub auth_type: AuthTypeArgument,
     /// SASL username (sasl-* auth types)
@@ -68,13 +73,13 @@ pub struct AddProfileArguments {
     /// Disables TLS for SASL auth types (local development only)
     #[arg(long)]
     pub no_tls: bool,
-    /// Marks the profile as protected: no plaintext, no disabled TLS, no --insecure
+    /// Marks the context as production: warns on every use and refuses plaintext, disabled TLS and --insecure
     #[arg(long)]
     pub protected: bool,
-    /// Makes the new profile the default
-    #[arg(long)]
-    pub set_default: bool,
-    /// Replaces an existing profile with the same name
+    /// Makes the new context the current one
+    #[arg(long = "use")]
+    pub use_after_add: bool,
+    /// Replaces an existing context with the same name
     #[arg(long)]
     pub force: bool,
 }

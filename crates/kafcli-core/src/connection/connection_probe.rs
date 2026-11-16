@@ -1,5 +1,5 @@
 use crate::auth::provider_factory::create_auth_provider;
-use crate::config::model::Profile;
+use crate::config::model::ConnectionContext;
 use crate::connection::client_config_builder::{ConnectionSettings, build_client_config};
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
@@ -9,24 +9,24 @@ use std::time::Duration;
 
 #[derive(Debug, Serialize)]
 pub struct ConnectionReport {
-    pub profile_name: String,
+    pub context_name: String,
     pub auth_type: String,
     pub principal: Option<String>,
     pub broker_count: usize,
     pub visible_topics: Vec<String>,
 }
 
-/// Connects once to the profile's brokers and reads cluster metadata.
+/// Connects once to the context's brokers and reads cluster metadata.
 ///
 /// The consumer is created without a group and dropped when this function returns.
-pub fn probe_profile_connection(
-    profile_name: &str,
-    profile: &Profile,
+pub fn probe_context_connection(
+    context_name: &str,
+    context: &ConnectionContext,
     resolver: &dyn SecretResolver,
     settings: &ConnectionSettings,
     timeout: Duration,
 ) -> CoreResult<ConnectionReport> {
-    let client_config = build_client_config(profile, resolver, settings)?;
+    let client_config = build_client_config(context, resolver, settings)?;
     let consumer: BaseConsumer = client_config.create().map_err(map_kafka_error)?;
     let metadata = consumer
         .fetch_metadata(None, timeout)
@@ -40,9 +40,9 @@ pub fn probe_profile_connection(
     visible_topics.sort();
 
     Ok(ConnectionReport {
-        profile_name: profile_name.to_string(),
-        auth_type: profile.auth.type_name().to_string(),
-        principal: create_auth_provider(&profile.auth).describe_principal(),
+        context_name: context_name.to_string(),
+        auth_type: context.auth.type_name().to_string(),
+        principal: create_auth_provider(&context.auth).describe_principal(),
         broker_count: metadata.brokers().len(),
         visible_topics,
     })
@@ -61,8 +61,8 @@ mod tests {
     use crate::secret::fixed_resolver::FixedSecretResolver;
     use std::time::Instant;
 
-    fn plaintext_profile(broker: &str) -> Profile {
-        Profile {
+    fn plaintext_context(broker: &str) -> ConnectionContext {
+        ConnectionContext {
             brokers: vec![broker.to_string()],
             auth: AuthConfig::Plaintext,
             protected: false,
@@ -74,9 +74,9 @@ mod tests {
     fn unreachable_broker_fails_within_timeout() {
         let started = Instant::now();
 
-        let result = probe_profile_connection(
+        let result = probe_context_connection(
             "local",
-            &plaintext_profile("127.0.0.1:1"),
+            &plaintext_context("127.0.0.1:1"),
             &FixedSecretResolver::returning("unused"),
             &ConnectionSettings { insecure: false },
             Duration::from_secs(2),

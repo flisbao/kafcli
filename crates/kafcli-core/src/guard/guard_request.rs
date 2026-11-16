@@ -6,9 +6,9 @@ pub struct GuardRequest {
     pub level: OperationLevel,
     /// Human-readable summary, e.g. "reset offsets of group pedidos-service".
     pub description: String,
-    /// Value the user must type to confirm a destructive operation on a protected profile.
+    /// Value the user must type to confirm a destructive operation on a protected context.
     pub confirmation_target: String,
-    /// `--yes`: skips the y/N prompt for writes on a protected profile.
+    /// `--yes`: skips the y/N prompt for writes on a protected context.
     pub assume_yes: bool,
     /// `--execute`: a destructive operation only runs when this is set.
     pub execute: bool,

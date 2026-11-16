@@ -3,27 +3,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Whole kafcli configuration file: the default profile and every named profile.
+/// Whole kafcli configuration file: the current context and every named context.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Configuration {
-    pub default_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_context: Option<String>,
     #[serde(default)]
-    pub profiles: BTreeMap<String, Profile>,
+    pub contexts: BTreeMap<String, ConnectionContext>,
 }
 
 /// A named Kafka cluster connection.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Profile {
+pub struct ConnectionContext {
     pub brokers: Vec<String>,
     pub auth: AuthConfig,
     #[serde(default)]
     pub protected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_registry: Option<toml::Table>,
+    pub schema_registry: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-/// Authentication mode of a profile, selected by the `type` field.
+/// Authentication mode of a context, selected by the `type` field.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum AuthConfig {
@@ -100,13 +101,13 @@ mod tests {
 
     #[test]
     fn type_name_matches_serialized_tag() {
-        let profile_auth = AuthConfig::SaslScram512(SaslCredentialsConfig {
+        let context_auth = AuthConfig::SaslScram512(SaslCredentialsConfig {
             username: "app".into(),
             secret_ref: "env:KAFKA_PASSWORD".parse().unwrap(),
             ca_location: None,
             use_tls: true,
         });
-        assert_eq!(profile_auth.type_name(), "sasl-scram-512");
+        assert_eq!(context_auth.type_name(), "sasl-scram-512");
         assert_eq!(AuthConfig::Plaintext.type_name(), "none");
     }
 }

@@ -1,6 +1,6 @@
 use crate::auth::provider_factory::create_auth_provider;
-use crate::config::model::Profile;
-use crate::config::validation::validate_profile;
+use crate::config::model::ConnectionContext;
+use crate::config::validation::validate_context;
 use crate::error::CoreResult;
 use crate::secret::resolver::SecretResolver;
 
@@ -16,20 +16,20 @@ pub struct ConnectionSettings {
     pub insecure: bool,
 }
 
-/// Builds the librdkafka configuration for `profile`.
+/// Builds the librdkafka configuration for `context`.
 ///
 /// Insecure overrides are applied last so they win over the provider's TLS properties.
 pub fn build_client_config(
-    profile: &Profile,
+    context: &ConnectionContext,
     resolver: &dyn SecretResolver,
     settings: &ConnectionSettings,
 ) -> CoreResult<rdkafka::ClientConfig> {
-    validate_profile(profile, settings.insecure)?;
+    validate_context(context, settings.insecure)?;
     let provider_properties =
-        create_auth_provider(&profile.auth).build_client_properties(resolver)?;
+        create_auth_provider(&context.auth).build_client_properties(resolver)?;
 
     let mut client_config = rdkafka::ClientConfig::new();
-    client_config.set("bootstrap.servers", profile.brokers.join(","));
+    client_config.set("bootstrap.servers", context.brokers.join(","));
     client_config.set("client.id", CLIENT_IDENTIFIER);
     provider_properties.apply_to(&mut client_config);
     client_config.set(
@@ -57,8 +57,8 @@ mod tests {
     use crate::error::CoreError;
     use crate::secret::fixed_resolver::FixedSecretResolver;
 
-    fn plaintext_profile(broker: &str) -> Profile {
-        Profile {
+    fn plaintext_context(broker: &str) -> ConnectionContext {
+        ConnectionContext {
             brokers: vec![broker.to_string()],
             auth: AuthConfig::Plaintext,
             protected: false,
@@ -66,8 +66,8 @@ mod tests {
         }
     }
 
-    fn unprotected_tls_profile() -> Profile {
-        Profile {
+    fn unprotected_tls_context() -> ConnectionContext {
+        ConnectionContext {
             brokers: vec!["broker:9093".to_string()],
             auth: AuthConfig::Tls(TlsAuthConfig { ca_location: None }),
             protected: false,
@@ -75,22 +75,22 @@ mod tests {
         }
     }
 
-    fn protected_tls_profile() -> Profile {
-        Profile {
+    fn protected_tls_context() -> ConnectionContext {
+        ConnectionContext {
             protected: true,
-            ..unprotected_tls_profile()
+            ..unprotected_tls_context()
         }
     }
 
     #[test]
     fn joins_brokers_and_sets_client_identifier() {
-        let profile = Profile {
+        let context = ConnectionContext {
             brokers: vec!["a:9092".to_string(), "b:9092".to_string()],
-            ..plaintext_profile("unused:9092")
+            ..plaintext_context("unused:9092")
         };
 
         let client_config = build_client_config(
-            &profile,
+            &context,
             &FixedSecretResolver::returning("unused"),
             &ConnectionSettings { insecure: false },
         )
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn insecure_disables_certificate_and_hostname_verification() {
         let client_config = build_client_config(
-            &unprotected_tls_profile(),
+            &unprotected_tls_context(),
             &FixedSecretResolver::returning("unused"),
             &ConnectionSettings { insecure: true },
         )
@@ -123,13 +123,13 @@ mod tests {
     }
 
     #[test]
-    fn refuses_insecure_on_protected_profile() {
+    fn refuses_insecure_on_protected_context() {
         let result = build_client_config(
-            &protected_tls_profile(),
+            &protected_tls_context(),
             &FixedSecretResolver::returning("unused"),
             &ConnectionSettings { insecure: true },
         );
 
-        assert!(matches!(result, Err(CoreError::ProfileValidation(_))));
+        assert!(matches!(result, Err(CoreError::ContextValidation(_))));
     }
 }

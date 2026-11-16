@@ -2,9 +2,9 @@ use crate::error::{CoreError, CoreResult};
 use std::path::PathBuf;
 
 const APPLICATION_DIRECTORY: &str = "kafcli";
-const CONFIGURATION_FILE_NAME: &str = "config.toml";
+const CONFIGURATION_FILE_NAME: &str = "config.json";
 
-/// Default configuration file: `<config dir>/kafcli/config.toml`.
+/// Default configuration file: `<config dir>/kafcli/config.json`.
 pub fn default_config_path() -> CoreResult<PathBuf> {
     dirs::config_dir()
         .map(|directory| {
@@ -34,7 +34,7 @@ mod tests {
     #[test]
     fn config_path_ends_with_kafcli_config_file() {
         let path = default_config_path().unwrap();
-        assert!(path.ends_with("kafcli/config.toml"));
+        assert!(path.ends_with("kafcli/config.json"));
     }
 
     #[test]
