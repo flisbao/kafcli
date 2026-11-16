@@ -52,7 +52,8 @@ struct ProbeArguments {
     /// protected contexts.
     #[arg(long, value_name = "N")]
     dump: Option<usize>,
-    /// Time budget in seconds for the probe, or idle time before a dump stops.
+    /// Timeout in seconds applied to each network operation of the probe, or idle time before a
+    /// dump stops.
     #[arg(
         long,
         value_name = "SECONDS",

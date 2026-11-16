@@ -25,7 +25,7 @@ const PROBE_PARTITION: i32 = 0;
 const TIMESTAMP_LOOKUP_SKEW_MILLIS: i64 = 1;
 const POLL_SLICE: Duration = Duration::from_millis(100);
 
-/// Target topic and overall time budget for one probe run.
+/// Target topic and the timeout applied to each network operation of one probe run.
 #[derive(Clone, Debug)]
 pub struct ProbeOptions {
     pub topic: String,

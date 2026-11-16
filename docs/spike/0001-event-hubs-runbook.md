@@ -13,6 +13,8 @@ Resultados vão para `/tmp/kafcli-spike-results`, fora do repositório. Este dir
 - Python 3 com `venv`.
 - Azure CLI instalado (`az`). Guia de instalação: <https://learn.microsoft.com/en-us/cli/azure/install-azure-cli>.
 - Uma assinatura Azure em que você possa criar recursos e atribuir papéis (RBAC) no namespace.
+- Rode todos os comandos a partir da raiz do repositório `kcli`. Os caminhos relativos, como
+  `spike/eventhubs/...`, dependem disso.
 
 Crie o diretório de resultados antes de começar:
 
@@ -156,13 +158,13 @@ não a coloque em comando com `echo`.
 
 ## 3. Contexto no kafcli
 
-Substitua `<ns>` pelo nome do namespace, sem `.servicebus.windows.net`. O endpoint Kafka do
-Event Hubs é `<namespace>.servicebus.windows.net:9093`, e o nome do event hub é o tópico Kafka
-(fonte: <https://learn.microsoft.com/en-us/azure/event-hubs/azure-event-hubs-apache-kafka-overview>).
+A variável `$KAFCLI_NS_STD` já tem o nome do namespace, sem `.servicebus.windows.net`. O endpoint
+Kafka do Event Hubs é `<namespace>.servicebus.windows.net:9093`, e o nome do event hub é o tópico
+Kafka (fonte: <https://learn.microsoft.com/en-us/azure/event-hubs/azure-event-hubs-apache-kafka-overview>).
 
 ```bash
 cargo run -q -p kafcli -- context add eh-std \
-  --brokers <ns>.servicebus.windows.net:9093 \
+  --brokers "$KAFCLI_NS_STD.servicebus.windows.net:9093" \
   --auth-type azure-connection-string \
   --secret-ref env:KAFCLI_EH_STD_CONNECTION
 
@@ -183,6 +185,11 @@ cargo run -q -p kafcli --example capability_probe -- \
   --output json > /tmp/kafcli-spike-results/eh-std-probe.json
 ```
 
+Esta nota vale para todas as saídas de probe e dump deste roteiro, inclusive a do emulador
+(passo 8): se o comando imprimir `error:`, apague o arquivo de saída, que fica vazio ou inválido,
+e registre o erro exato num arquivo de notas em `/tmp/kafcli-spike-results/` (no emulador, use
+`emulator-probe-notes.txt`).
+
 ## 5. Escritor Avro com o Azure Schema Registry
 
 O script `spike/eventhubs/azure_schema_registry_writer.py` registra o schema fixo
@@ -196,7 +203,7 @@ python3 -m venv "$HOME/kafcli-spike-venv"
 pip install -r spike/eventhubs/requirements.txt
 
 python spike/eventhubs/azure_schema_registry_writer.py \
-  --namespace "<ns>.servicebus.windows.net" \
+  --namespace "$KAFCLI_NS_STD.servicebus.windows.net" \
   --event-hub kafcli-probe \
   --schema-group kafcli-spike \
   --count 3 2>&1 | tee /tmp/kafcli-spike-results/azure-sr-writer.txt
@@ -252,8 +259,9 @@ Fontes: `--sku Premium` e `--capacity` (unidades Premium, de 0 a 10) em
 comandos de event hub, schema group, papéis RBAC e connection string do passo 2, trocando
 `$KAFCLI_NS_STD` por `$KAFCLI_NS_PREM` e `KAFCLI_EH_STD_CONNECTION` por
 `KAFCLI_EH_PREM_CONNECTION`. Depois crie o contexto `eh-prem` com
-`--secret-ref env:KAFCLI_EH_PREM_CONNECTION` e rode os passos 3 a 6 com `--context eh-prem`,
-gravando em `eh-prem-probe.json`, `eh-prem-dump.json` e `azure-sr-writer-premium.txt`.
+`--secret-ref env:KAFCLI_EH_PREM_CONNECTION` e rode os passos 3 a 6 com `--context eh-prem`
+(no passo 3 e no passo 5, use `$KAFCLI_NS_PREM` no lugar de `$KAFCLI_NS_STD`), gravando em
+`eh-prem-probe.json`, `eh-prem-dump.json` e `azure-sr-writer-premium.txt`.
 
 ## 8. Emulador do Event Hubs (avaliação feita pelo autor)
 
@@ -325,6 +333,12 @@ o emulador aceita, e não exige mudança no código do kafcli.
      --output json > /tmp/kafcli-spike-results/emulator-probe.json
    ```
 
+4. Quando terminar a avaliação, pare o emulador e remova os volumes dele:
+
+   ```bash
+   docker compose -f <caminho-do-docker-compose.yaml> down -v
+   ```
+
 **Limite do emulador.** O escritor do passo 5 não roda contra o emulador, porque o emulador não
 tem integração com o Schema Registry. O probe e o dump são a parte que pode ser testada.
 
@@ -355,8 +369,14 @@ Premium):
 
 ```bash
 az group delete --name "$KAFCLI_SPIKE_RG" --yes
-unset KAFCLI_EH_STD_CONNECTION KAFCLI_EH_PREM_CONNECTION
+unset KAFCLI_EH_STD_CONNECTION KAFCLI_EH_PREM_CONNECTION KAFCLI_EH_EMU_CONNECTION
+rm -rf "$HOME/kafcli-spike-venv"
 ```
+
+Os contextos `eh-std`, `eh-prem` e `eh-emu` continuam no arquivo de configuração do kafcli,
+apontando para hosts que já foram apagados; o CLI não tem `context remove`, então remova-os
+editando o `config.json` no diretório de configuração do kafcli (ou no caminho definido em
+`KAFCLI_CONFIG`).
 
 Fonte: <https://learn.microsoft.com/en-us/cli/azure/group> (`az group delete --name`,
 `--yes` para não pedir confirmação; `--no-wait` é opcional).
