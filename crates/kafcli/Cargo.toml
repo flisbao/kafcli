@@ -11,6 +11,11 @@ repository.workspace = true
 name = "kafcli"
 path = "src/main.rs"
 
+[[example]]
+name = "capability_probe"
+path = "examples/capability_probe.rs"
+test = true
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

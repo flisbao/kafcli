@@ -9,8 +9,10 @@
 
 use clap::{Parser, ValueEnum};
 use kafcli_core::capability::capability_probe::{ProbeOptions, probe_capabilities};
-use kafcli_core::capability::capability_report::{CapabilityOutcome, CapabilityReport};
-use kafcli_core::capability::message_dump::{MessageDump, dump_topic_messages};
+use kafcli_core::capability::capability_report::{
+    CapabilityCheck, CapabilityOutcome, CapabilityReport,
+};
+use kafcli_core::capability::message_dump::{HeaderDump, MessageDump, dump_topic_messages};
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::config::paths::default_config_path;
 use kafcli_core::config::selection::select_context;
@@ -70,6 +72,7 @@ enum OutputFormat {
 }
 
 /// A failed run: a protected-context refusal (exit 2) or a runtime error (exit 1).
+#[derive(Debug)]
 enum ProbeError {
     Refused { context_name: String },
     Core(CoreError),
@@ -173,7 +176,7 @@ fn run(arguments: &ProbeArguments) -> Result<(), ProbeError> {
 fn write_report(format: OutputFormat, report: &CapabilityReport) -> Result<(), ProbeError> {
     let text = match format {
         OutputFormat::Table => render_report_table(report),
-        OutputFormat::Json => to_pretty_json(report)?,
+        OutputFormat::Json => to_pretty_json(&neutralize_report(report))?,
     };
     write_line(&text)?;
     Ok(())
@@ -182,7 +185,7 @@ fn write_report(format: OutputFormat, report: &CapabilityReport) -> Result<(), P
 fn write_dump(format: OutputFormat, messages: &[MessageDump]) -> Result<(), ProbeError> {
     let text = match format {
         OutputFormat::Table => render_dump_table(messages),
-        OutputFormat::Json => to_pretty_json(messages)?,
+        OutputFormat::Json => to_pretty_json(&neutralize_messages(messages))?,
     };
     write_line(&text)?;
     Ok(())
@@ -292,4 +295,166 @@ fn neutralize_control_characters(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Copy of the report with every broker-originating string neutralized, for JSON output.
+///
+/// Neutralization happens on the field values, not on the serialized text: pretty JSON contains
+/// real newlines that would otherwise be replaced too. `serde_json` escapes only C0 controls, so
+/// DEL and C1 controls (such as U+009B) would otherwise reach the terminal raw.
+fn neutralize_report(report: &CapabilityReport) -> CapabilityReport {
+    CapabilityReport {
+        context_name: neutralize_control_characters(&report.context_name),
+        run_identifier: neutralize_control_characters(&report.run_identifier),
+        topic: neutralize_control_characters(&report.topic),
+        probe_group: neutralize_control_characters(&report.probe_group),
+        broker_count: report.broker_count,
+        checks: report
+            .checks
+            .iter()
+            .map(|check| CapabilityCheck {
+                name: check.name,
+                outcome: neutralize_outcome(&check.outcome),
+                elapsed_millis: check.elapsed_millis,
+            })
+            .collect(),
+    }
+}
+
+fn neutralize_outcome(outcome: &CapabilityOutcome) -> CapabilityOutcome {
+    match outcome {
+        CapabilityOutcome::Supported { detail } => CapabilityOutcome::Supported {
+            detail: detail.as_deref().map(neutralize_control_characters),
+        },
+        CapabilityOutcome::Unsupported { error_code, detail } => CapabilityOutcome::Unsupported {
+            error_code: neutralize_control_characters(error_code),
+            detail: detail.as_deref().map(neutralize_control_characters),
+        },
+        CapabilityOutcome::Failed { message } => CapabilityOutcome::Failed {
+            message: neutralize_control_characters(message),
+        },
+    }
+}
+
+/// Copy of the dumped messages with header names and UTF-8 values neutralized, for JSON output.
+fn neutralize_messages(messages: &[MessageDump]) -> Vec<MessageDump> {
+    messages
+        .iter()
+        .map(|message| MessageDump {
+            partition: message.partition,
+            offset: message.offset,
+            timestamp_millis: message.timestamp_millis,
+            key_length: message.key_length,
+            value_length: message.value_length,
+            value_prefix_hex: message.value_prefix_hex.clone(),
+            headers: message
+                .headers
+                .iter()
+                .map(|header| HeaderDump {
+                    name: neutralize_control_characters(&header.name),
+                    value_utf8: header
+                        .value_utf8
+                        .as_deref()
+                        .map(neutralize_control_characters),
+                    value_hex: header.value_hex.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use kafcli_core::capability::capability_report::CapabilityName;
+
+    fn message_with_header(name: &str, value: Option<&str>) -> MessageDump {
+        MessageDump {
+            partition: 0,
+            offset: 7,
+            timestamp_millis: Some(1),
+            key_length: None,
+            value_length: Some(0),
+            value_prefix_hex: String::new(),
+            headers: vec![HeaderDump {
+                name: name.to_string(),
+                value_utf8: value.map(str::to_string),
+                value_hex: String::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn json_dump_neutralizes_c1_and_del_in_header_name_and_value() {
+        let messages = [message_with_header("na\u{7f}me", Some("a\u{9b}31m\u{7f}b"))];
+
+        let json = to_pretty_json(&neutralize_messages(&messages)).unwrap();
+
+        assert!(!json.contains('\u{7f}'), "raw DEL reached JSON: {json}");
+        assert!(!json.contains('\u{9b}'), "raw CSI reached JSON: {json}");
+        assert!(json.contains("\"na?me\""), "{json}");
+        assert!(json.contains("\"a?31m?b\""), "{json}");
+    }
+
+    #[test]
+    fn json_dump_keeps_pretty_structure() {
+        let messages = [message_with_header("name", Some("value"))];
+
+        let json = to_pretty_json(&neutralize_messages(&messages)).unwrap();
+
+        assert!(
+            json.contains('\n'),
+            "pretty JSON lost its line breaks: {json}"
+        );
+        assert!(json.contains("\"value_utf8\": \"value\""), "{json}");
+    }
+
+    #[test]
+    fn json_report_neutralizes_broker_text_in_outcomes() {
+        let report = CapabilityReport {
+            context_name: "ctx".to_string(),
+            run_identifier: "1".to_string(),
+            topic: "t\u{9b}".to_string(),
+            probe_group: "g".to_string(),
+            broker_count: 1,
+            checks: vec![
+                CapabilityCheck {
+                    name: CapabilityName::ListGroups,
+                    outcome: CapabilityOutcome::Failed {
+                        message: "bad\u{7f}\u{9b}31m".to_string(),
+                    },
+                    elapsed_millis: 1,
+                },
+                CapabilityCheck {
+                    name: CapabilityName::DescribeGroup,
+                    outcome: CapabilityOutcome::Unsupported {
+                        error_code: "Code\u{85}".to_string(),
+                        detail: Some("d\u{7f}".to_string()),
+                    },
+                    elapsed_millis: 2,
+                },
+                CapabilityCheck {
+                    name: CapabilityName::ListOffsets,
+                    outcome: CapabilityOutcome::Supported {
+                        detail: Some("s\u{9b}".to_string()),
+                    },
+                    elapsed_millis: 3,
+                },
+            ],
+        };
+
+        let json = to_pretty_json(&neutralize_report(&report)).unwrap();
+
+        for raw in ['\u{7f}', '\u{85}', '\u{9b}'] {
+            assert!(
+                !json.contains(raw),
+                "raw control {raw:?} reached JSON: {json}"
+            );
+        }
+        assert!(json.contains("\"message\": \"bad??31m\""), "{json}");
+        assert!(json.contains("\"error_code\": \"Code?\""), "{json}");
+        assert!(json.contains("\"detail\": \"s?\""), "{json}");
+        assert!(json.contains("\"topic\": \"t?\""), "{json}");
+    }
 }
