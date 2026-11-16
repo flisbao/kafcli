@@ -282,21 +282,56 @@ O guia mostra que o Kafka do emulador usa a porta `9092` (mapeamento `9092:9092`
 o Schema Registry. Portanto o escritor do passo 5 não roda contra ele. Também não há
 autenticação Microsoft Entra ID, então o `DefaultAzureCredential` não funciona nele.
 
-**Probe contra o emulador.** Se quiser testar só o probe:
+**Probe contra o emulador.** Se quiser testar só o probe, use o tipo de autenticação
+`sasl-plain` com `--no-tls`. Isso gera `SASL_PLAINTEXT` com o mecanismo `PLAIN`, que é o que
+o emulador aceita, e não exige mudança no código do kafcli.
 
-1. Defina a connection string do emulador numa variável de ambiente (por exemplo
-   `KAFCLI_EH_EMU_CONNECTION`). O guia mostra o formato
+1. Guarde a connection string do emulador numa variável de ambiente, sem gravá-la em arquivo.
+   O comando abaixo pede o valor sem mostrá-lo na tela e não o deixa no histórico do shell:
+
+   ```bash
+   read -rsp "Connection string do emulador: " KAFCLI_EH_EMU_CONNECTION && echo && export KAFCLI_EH_EMU_CONNECTION
+   ```
+
+   O formato, segundo o guia oficial, é
    `Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<chave>;UseDevelopmentEmulator=true;`.
-   O guia usa `SAS_KEY_VALUE` como marcador; confirme a chave na configuração do seu emulador.
-2. Crie um contexto com `--brokers localhost:9092` e
-   `--secret-ref env:KAFCLI_EH_EMU_CONNECTION`.
-3. Rode o probe com `--topic eh1` (o nome do event hub do `config.json` de exemplo do guia).
+   O guia mostra `SAS_KEY_VALUE` como marcador. Use a chave do seu emulador.
 
-**Aviso importante:** o `azure-connection-string` do kafcli sempre usa `SASL_SSL`, e o
-emulador aceita só `SASL_PLAINTEXT`. Por isso, com o kafcli atual, a conexão tende a falhar
-no handshake TLS. Registre o erro como ele aparecer, em
-`/tmp/kafcli-spike-results/emulator-probe-notes.txt`. Corrigir isso exige mudança no código
-do kafcli, que está fora deste roteiro.
+2. Crie o contexto. O usuário precisa ser `$ConnectionString` entre aspas simples, para que o
+   shell não tente expandir o `$`. A porta `9092` vem do mapeamento `9092:9092` do
+   `docker-compose.yaml` do guia oficial:
+
+   ```bash
+   cargo run -q -p kafcli -- context add eh-emu \
+     --brokers localhost:9092 \
+     --auth-type sasl-plain \
+     --username '$ConnectionString' \
+     --secret-ref env:KAFCLI_EH_EMU_CONNECTION \
+     --no-tls
+
+   cargo run -q -p kafcli -- context test eh-emu
+   ```
+
+   Fonte da porta e do usuário: <https://learn.microsoft.com/en-us/azure/event-hubs/test-locally-with-event-hub-emulator>
+   (seção "Using Kafka" e `docker-compose.yaml`).
+
+3. Rode o probe com `--topic eh1`, o event hub do `config.json` de exemplo do guia, e salve a
+   saída:
+
+   ```bash
+   cargo run -q -p kafcli --example capability_probe -- \
+     --context eh-emu \
+     --topic eh1 \
+     --output json > /tmp/kafcli-spike-results/emulator-probe.json
+   ```
+
+**Limite do emulador.** O escritor do passo 5 não roda contra o emulador, porque o emulador não
+tem integração com o Schema Registry. O probe e o dump são a parte que pode ser testada.
+
+**Aviso:** o contexto `azure-connection-string` não serve para o emulador, porque ele força
+`SASL_SSL`, e o emulador aceita só `SASL_PLAINTEXT`. Use `sasl-plain` com `--no-tls`, como
+acima. Se o probe falhar, registre o erro exato em
+`/tmp/kafcli-spike-results/emulator-probe-notes.txt`.
 
 Para registrar a avaliação, anote no mesmo arquivo: versão da imagem, se o compose subiu, se
 o probe conectou e o erro exato.
