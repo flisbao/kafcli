@@ -9,9 +9,12 @@ use crate::error::{CoreError, CoreResult};
 
 /// Upper bound for one allocation made by apache-avro while decoding untrusted bytes.
 const MAX_ALLOCATION_BYTES: usize = 64 * 1024 * 1024;
+/// apache-avro counts every schema node it enters, and a nested union or field costs
+/// about three of those per JSON level, so 64 kafcli levels need roughly 192 of them.
+const MAX_DECODE_RECURSION_DEPTH: usize = 256;
 const UNEXPECTED_VALUE: &str = "value is not valid Avro for the schema";
 
-static ALLOCATION_LIMIT: Once = Once::new();
+static APACHE_AVRO_LIMITS: Once = Once::new();
 
 /// A parsed Avro schema, ready to encode and decode JSON values.
 #[derive(Debug, Clone)]
@@ -23,8 +26,9 @@ pub struct AvroSchema {
 impl AvroSchema {
     /// Parses schema text. The text comes from a file or the registry, never from a message.
     pub fn parse(text: &str) -> CoreResult<Self> {
-        ALLOCATION_LIMIT.call_once(|| {
+        APACHE_AVRO_LIMITS.call_once(|| {
             apache_avro::util::max_allocation_bytes(MAX_ALLOCATION_BYTES);
+            apache_avro::util::max_decode_recursion_depth(MAX_DECODE_RECURSION_DEPTH);
         });
         let invalid = |error: apache_avro::Error| {
             CoreError::InvalidInput(format!("schema is not a valid Avro schema: {error}"))
@@ -432,5 +436,114 @@ mod tests {
                 .starts_with("invalid input: schema is not a valid Avro schema: "),
             "{error}"
         );
+    }
+
+    const NODE: &str = r#"{"type":"record","name":"Node","fields":[
+        {"name":"value","type":"int"},
+        {"name":"next","type":["null","Node"]}]}"#;
+
+    /// Unsigned LEB128 varint, as Avro writes block counts and zig-zag longs.
+    fn varint(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return out;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    /// Hand-built `Node` datum: `levels` nodes linked together, then a final node with no next.
+    fn linked_list_bytes(levels: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for _ in 0..levels {
+            // value 0, union branch 1 (Node)
+            bytes.extend([0x00, 0x02]);
+        }
+        // value 0, union branch 0 (null)
+        bytes.extend([0x00, 0x00]);
+        bytes
+    }
+
+    /// Debug builds give apache-avro's recursive decoder frames tens of KiB each, so the
+    /// depth tests run on a thread with a stack large enough for the 256-level budget.
+    fn on_large_stack<T: Send + 'static>(test: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(test)
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread must not panic")
+    }
+
+    #[test]
+    fn linked_list_30_levels_round_trips() {
+        on_large_stack(|| {
+            let node = schema(NODE);
+            let mut value = json!({"value": 0, "next": null});
+            for level in 1..30 {
+                value = json!({"value": level, "next": value});
+            }
+
+            let bytes = node.encode_json(&value).expect("encode");
+            let decoded = node.decode_to_json(&bytes).expect("decode");
+
+            assert_eq!(decoded, value);
+        });
+    }
+
+    #[test]
+    fn bytes_nested_beyond_64_levels_are_rejected_on_decode() {
+        on_large_stack(|| {
+            let node = schema(NODE);
+
+            let error = node
+                .decode_to_json(&linked_list_bytes(70))
+                .expect_err("70 levels must exceed the 64-level limit");
+            assert!(
+                error.ends_with(": value nests deeper than 64 levels"),
+                "{error}"
+            );
+
+            let error = node
+                .decode_to_json(&linked_list_bytes(300))
+                .expect_err("deeper bytes must fail without overflowing the stack");
+            assert_eq!(error, "value is not valid Avro for the schema");
+        });
+    }
+
+    #[test]
+    fn zero_width_array_with_huge_block_count_is_rejected() {
+        let array = schema(r#"{"type":"array","items":"null"}"#);
+        // Block count 2^40 of zero-width items, zig-zag encoded, then one more small block.
+        let mut bytes = varint(1 << 41);
+        bytes.extend(varint(2));
+        bytes.push(0x00);
+
+        let error = array
+            .decode_to_json(&bytes)
+            .expect_err("a 2^40 block count must not be materialized");
+
+        assert_eq!(error, "value is not valid Avro for the schema");
+    }
+
+    #[test]
+    fn zero_width_items_share_one_budget_per_datum() {
+        let array = schema(r#"{"type":"array","items":"null"}"#);
+        // 100 blocks of 2^20 zero-width items: far beyond the per-datum allocation budget.
+        let mut bytes = Vec::new();
+        for _ in 0..100 {
+            bytes.extend(varint(1 << 21));
+        }
+        bytes.push(0x00);
+
+        let error = array
+            .decode_to_json(&bytes)
+            .expect_err("items across blocks must share one budget");
+
+        assert_eq!(error, "value is not valid Avro for the schema");
     }
 }
