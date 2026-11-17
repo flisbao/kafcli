@@ -24,12 +24,27 @@ pub enum CoreError {
     TopicNotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("value does not match schema at '{pointer}': {reason}")]
+    SchemaValidation { pointer: String, reason: String },
+    #[error("schema registry error: {0}")]
+    SchemaRegistry(String),
+    /// Registry failure that may pass on its own: transport error, timeout or HTTP 5xx. Same text as
+    /// `SchemaRegistry`; the schema cache only forgets it after a while.
+    #[error("schema registry error: {0}")]
+    SchemaRegistryTransient(String),
     #[error("template error: {0}")]
     Template(String),
     #[error("operation aborted: {0}")]
     OperationAborted(String),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl CoreError {
+    /// Whether the failure may pass on its own, so it should not be remembered for the whole run.
+    pub fn is_transient_registry_failure(&self) -> bool {
+        matches!(self, Self::SchemaRegistryTransient(_))
+    }
 }
 
 pub type CoreResult<T> = Result<T, CoreError>;

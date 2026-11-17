@@ -1,3 +1,4 @@
+use crate::config::schema_registry_model::SchemaRegistryConfig;
 use crate::secret::reference::SecretReference;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -21,7 +22,7 @@ pub struct ConnectionContext {
     #[serde(default)]
     pub protected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_registry: Option<serde_json::Map<String, serde_json::Value>>,
+    pub schema_registry: Option<SchemaRegistryConfig>,
 }
 
 /// Authentication mode of a context, selected by the `type` field.

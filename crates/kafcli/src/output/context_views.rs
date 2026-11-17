@@ -3,6 +3,7 @@ use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
 use kafcli_core::config::model::ConnectionContext;
+use kafcli_core::config::schema_registry_model::SchemaRegistryConfig;
 use serde::Serialize;
 
 /// One context as listed by `context list`, `context add` and `context use`.
@@ -41,7 +42,51 @@ pub struct ContextDetailView {
     pub principal: Option<String>,
     pub secret_references: Vec<String>,
     pub protected: bool,
-    pub has_schema_registry: bool,
+    pub schema_registry: Option<RegistryDetailView>,
+}
+
+/// The Schema Registry of a context, as shown by `context show`. Secret references are listed, never resolved.
+#[derive(Serialize)]
+pub struct RegistryDetailView {
+    pub registry_type: String,
+    pub url: String,
+    pub group: Option<String>,
+    pub auth_type: String,
+    pub secret_references: Vec<String>,
+}
+
+impl RegistryDetailView {
+    pub fn from_config(config: &SchemaRegistryConfig) -> Self {
+        let group = match config {
+            SchemaRegistryConfig::Azure(azure) => Some(azure.group.clone()),
+            SchemaRegistryConfig::Confluent(_) => None,
+        };
+        Self {
+            registry_type: config.type_name().to_string(),
+            url: redact_url_userinfo(config.url()),
+            group,
+            auth_type: config.auth().type_name().to_string(),
+            secret_references: config
+                .auth()
+                .secret_references()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
+}
+
+/// Hides the `user:password@` part of the URL authority, so a hand-edited URL is never echoed.
+fn redact_url_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, remainder) = rest.split_at(authority_end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://***@{host}{remainder}"),
+        None => url.to_string(),
+    }
 }
 
 /// The name of the current context, as printed by `context current`.
@@ -95,10 +140,12 @@ impl TableRenderable for ContextDetailView {
             ))),
         ]);
         table.add_row(vec![Cell::new("protected"), Cell::new(self.protected)]);
-        table.add_row(vec![
-            Cell::new("schema_registry"),
-            Cell::new(self.has_schema_registry),
-        ]);
+        for (field, value) in schema_registry_rows(self.schema_registry.as_ref()) {
+            table.add_row(vec![
+                Cell::new(field),
+                Cell::new(sanitize_for_terminal(&value)),
+            ]);
+        }
         table.to_string()
     }
 }
@@ -124,11 +171,33 @@ fn build_summary_table<'a>(summaries: impl IntoIterator<Item = &'a ContextSummar
     table
 }
 
-fn build_table(headers: &[&str]) -> Table {
+pub fn build_table(headers: &[&str]) -> Table {
     let mut table = Table::new();
     *table.style_mut() = UTF8_FULL_CONDENSED;
     table.set_header(headers.iter().map(Cell::new).collect::<Vec<_>>());
     table
+}
+
+fn schema_registry_rows(registry: Option<&RegistryDetailView>) -> Vec<(&'static str, String)> {
+    let Some(registry) = registry else {
+        return vec![("schema_registry", "-".to_string())];
+    };
+    vec![
+        (
+            "schema_registry.registry_type",
+            registry.registry_type.clone(),
+        ),
+        ("schema_registry.url", registry.url.clone()),
+        (
+            "schema_registry.group",
+            registry.group.clone().unwrap_or_else(|| "-".to_string()),
+        ),
+        ("schema_registry.auth_type", registry.auth_type.clone()),
+        (
+            "schema_registry.secret_references",
+            join_or_dash(&registry.secret_references),
+        ),
+    ]
 }
 
 fn join_or_dash(values: &[String]) -> String {
@@ -142,6 +211,7 @@ fn join_or_dash(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kafcli_core::config::schema_registry_model::{ConfluentRegistryConfig, RegistryAuthConfig};
 
     #[test]
     fn context_list_neutralizes_terminal_control_characters() {
@@ -169,5 +239,34 @@ mod tests {
         };
 
         assert_eq!(view.render_table(), "?[2Jdev");
+    }
+
+    fn confluent_url(url: &str) -> RegistryDetailView {
+        RegistryDetailView::from_config(&SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
+            url: url.to_string(),
+            auth: RegistryAuthConfig::Anonymous,
+            ca_location: None,
+        }))
+    }
+
+    #[test]
+    fn hides_userinfo_of_registry_url() {
+        let view = confluent_url("https://user:pass@sr.example:8081/base");
+
+        assert_eq!(view.url, "https://***@sr.example:8081/base");
+    }
+
+    #[test]
+    fn keeps_registry_url_without_userinfo() {
+        let view = confluent_url("https://sr.example:8081/base");
+
+        assert_eq!(view.url, "https://sr.example:8081/base");
+    }
+
+    #[test]
+    fn keeps_at_sign_outside_the_authority() {
+        let view = confluent_url("https://sr.example:8081/topics/a@b");
+
+        assert_eq!(view.url, "https://sr.example:8081/topics/a@b");
     }
 }

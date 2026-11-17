@@ -163,7 +163,12 @@ mod tests {
     "eh": {
       "brokers": ["ns.servicebus.windows.net:9093"],
       "auth": { "type": "azure-connection-string", "secret_ref": "keyring:kafcli/eh" },
-      "schema_registry": { "type": "azure" }
+      "schema_registry": {
+        "type": "azure",
+        "url": "https://ns.servicebus.windows.net",
+        "group": "pedidos",
+        "auth": { "type": "bearer", "token_ref": "env:SR_TOKEN" }
+      }
     }
   }
 }"#;

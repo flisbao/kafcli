@@ -251,7 +251,7 @@ impl MessagePreparer<'_> {
         let encoded = self.encoder.encode_value(fields)?;
         let key = self.render_key(Some(fields))?;
         let mut headers = self.render_headers(Some(fields))?;
-        headers.extend(encoded.headers);
+        replace_headers(&mut headers, encoded.headers);
         Ok(PreparedMessage {
             key,
             value: Some(encoded.bytes),
@@ -274,7 +274,7 @@ impl MessagePreparer<'_> {
         };
         let mut headers = envelope.record_headers()?;
         headers.extend(self.render_headers(fields)?);
-        headers.extend(resolved.encoder_headers);
+        replace_headers(&mut headers, resolved.encoder_headers);
         Ok(PreparedMessage {
             key,
             value: resolved.bytes,
@@ -349,6 +349,17 @@ impl MessagePreparer<'_> {
         render_text_template(text, &self.state, self.environment, self.now, fields)
             .map(String::into_bytes)
     }
+}
+
+/// Drops every header whose name matches one the encoder set (ASCII case-insensitive), keeping the
+/// order of the rest, then appends the encoder's headers.
+fn replace_headers(headers: &mut Vec<RecordHeader>, encoder_headers: Vec<RecordHeader>) {
+    headers.retain(|header| {
+        !encoder_headers
+            .iter()
+            .any(|encoded| encoded.name.eq_ignore_ascii_case(&header.name))
+    });
+    headers.extend(encoder_headers);
 }
 
 /// What an envelope contributes to the wire message before its templates are applied.
@@ -641,6 +652,7 @@ fn map_kafka_error(error: KafkaError) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::azure_avro_codec::AzureAvroEncoder;
     use crate::codec::raw_json_codec::RawJsonCodec;
     use crate::message::message_envelope::parse_envelope_line;
     use crate::template::ProcessEnvironment;
@@ -944,5 +956,104 @@ mod tests {
     #[test]
     fn neutralize_replaces_control_characters() {
         assert_eq!(neutralize_text("a\u{1b}[2Jb\nc"), "a\u{FFFD}[2Jb\u{FFFD}c");
+    }
+
+    const AZURE_ID: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+
+    fn azure_encoder() -> AzureAvroEncoder {
+        AzureAvroEncoder::new(
+            AZURE_ID.to_string(),
+            crate::codec::avro_schema::AvroSchema::parse(r#"{"type":"string"}"#)
+                .expect("test schema parses"),
+        )
+    }
+
+    fn prepare_with(
+        encoder: &dyn ValueEncoder,
+        inputs: &[ProduceInput],
+        options: &ProduceOptions,
+    ) -> CoreResult<Vec<PreparedMessage>> {
+        prepare_messages(
+            inputs,
+            options,
+            encoder,
+            &ProcessEnvironment,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+    }
+
+    fn content_type_value() -> Vec<u8> {
+        format!("avro/binary+{AZURE_ID}").into_bytes()
+    }
+
+    #[test]
+    fn encoder_header_replaces_envelope_header_case_insensitively() -> CoreResult<()> {
+        let inputs = vec![envelope(
+            r#"{"kafcli_envelope":1,"headers":[{"name":"Content-Type","value":"avro/binary+old"}],"value":"x"}"#,
+            1,
+        )];
+
+        let messages = prepare_with(&azure_encoder(), &inputs, &options(1))?;
+
+        assert_eq!(
+            messages[0].headers,
+            vec![RecordHeader {
+                name: "content-type".to_string(),
+                value: Some(content_type_value()),
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn encoder_header_replaces_cli_header() -> CoreResult<()> {
+        let inputs = vec![payload(json!("x"), 1)];
+        let mut produce_options = options(1);
+        produce_options.header_templates = vec![
+            ("origin".to_string(), "run".to_string()),
+            ("CONTENT-TYPE".to_string(), "text/plain".to_string()),
+            ("trace".to_string(), "t-1".to_string()),
+        ];
+
+        let messages = prepare_with(&azure_encoder(), &inputs, &produce_options)?;
+
+        assert_eq!(
+            messages[0].headers,
+            vec![
+                RecordHeader {
+                    name: "origin".to_string(),
+                    value: Some(b"run".to_vec()),
+                },
+                RecordHeader {
+                    name: "trace".to_string(),
+                    value: Some(b"t-1".to_vec()),
+                },
+                RecordHeader {
+                    name: "content-type".to_string(),
+                    value: Some(content_type_value()),
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn base64_envelope_keeps_its_headers() -> CoreResult<()> {
+        let inputs = vec![envelope(
+            r#"{"kafcli_envelope":1,"headers":[{"name":"content-type","value":"application/x"}],"value_base64":"/wA="}"#,
+            1,
+        )];
+
+        let messages = prepare_with(&azure_encoder(), &inputs, &options(1))?;
+
+        assert_eq!(messages[0].value, Some(vec![0xff, 0x00]));
+        assert_eq!(
+            messages[0].headers,
+            vec![RecordHeader {
+                name: "content-type".to_string(),
+                value: Some(b"application/x".to_vec()),
+            }]
+        );
+        Ok(())
     }
 }

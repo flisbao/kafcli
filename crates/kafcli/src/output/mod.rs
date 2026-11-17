@@ -6,4 +6,5 @@ pub mod produce_dry_run_view;
 pub mod produce_report_view;
 pub mod production_warning;
 pub mod renderer;
+pub mod schema_views;
 pub mod terminal_text;

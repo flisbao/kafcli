@@ -1,4 +1,6 @@
-use crate::cli::context_arguments::{AddContextArguments, AuthTypeArgument};
+use crate::cli::context_arguments::{
+    AddContextArguments, AuthTypeArgument, RegistryAuthTypeArgument, RegistryTypeArgument,
+};
 use crate::execution_context::ExecutionContext;
 use crate::output::context_views::ContextSummary;
 use crate::output::production_warning::warn_if_production;
@@ -7,6 +9,10 @@ use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
     AuthConfig, AzureConnectionStringConfig, ConnectionContext, MutualTlsAuthConfig,
     SaslCredentialsConfig, TlsAuthConfig,
+};
+use kafcli_core::config::schema_registry_model::{
+    AzureRegistryConfig, ConfluentRegistryConfig, RegistryAuthConfig, RegistryBasicAuthConfig,
+    RegistryBearerAuthConfig, RegistryMutualTlsConfig, SchemaRegistryConfig,
 };
 use kafcli_core::config::validation::validate_context;
 use kafcli_core::config::writer::save_configuration;
@@ -29,7 +35,7 @@ pub fn add_context(
         brokers: arguments.brokers.clone(),
         auth: build_auth_config(arguments)?,
         protected: arguments.protected,
-        schema_registry: None,
+        schema_registry: build_schema_registry_config(arguments)?,
     };
     validate_context(&connection_context, false)?;
 
@@ -86,6 +92,78 @@ fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConf
                     secret_ref: parse_secret_reference(&secret_text, "--secret-ref")?,
                 },
             ))
+        }
+    }
+}
+
+/// Builds the Schema Registry of the context; `None` when no `--registry-*` flag is given.
+fn build_schema_registry_config(
+    arguments: &AddContextArguments,
+) -> anyhow::Result<Option<SchemaRegistryConfig>> {
+    let Some(registry_type) = arguments.registry_type else {
+        return Ok(None);
+    };
+    let url = arguments
+        .registry_url
+        .clone()
+        .ok_or_else(|| anyhow!("--registry-url is required with --registry-type"))?;
+    let auth = build_registry_auth_config(arguments)?;
+    Ok(Some(match registry_type {
+        RegistryTypeArgument::Confluent => {
+            SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
+                url,
+                auth,
+                ca_location: arguments.registry_ca_location.clone(),
+            })
+        }
+        RegistryTypeArgument::Azure => SchemaRegistryConfig::Azure(AzureRegistryConfig {
+            url,
+            group: arguments.registry_group.clone().unwrap_or_default(),
+            auth,
+        }),
+    }))
+}
+
+fn build_registry_auth_config(
+    arguments: &AddContextArguments,
+) -> anyhow::Result<RegistryAuthConfig> {
+    match arguments.registry_auth_type {
+        RegistryAuthTypeArgument::None => Ok(RegistryAuthConfig::Anonymous),
+        RegistryAuthTypeArgument::Basic => {
+            let (Some(username), Some(secret_text)) = (
+                arguments.registry_username.as_deref(),
+                arguments.registry_secret_ref.as_deref(),
+            ) else {
+                bail!(
+                    "--registry-auth-type basic needs --registry-username and --registry-secret-ref"
+                );
+            };
+            Ok(RegistryAuthConfig::Basic(RegistryBasicAuthConfig {
+                username: username.to_string(),
+                secret_ref: parse_secret_reference(secret_text, "--registry-secret-ref")?,
+            }))
+        }
+        RegistryAuthTypeArgument::Bearer => {
+            let Some(secret_text) = arguments.registry_secret_ref.as_deref() else {
+                bail!("--registry-auth-type bearer needs --registry-secret-ref");
+            };
+            Ok(RegistryAuthConfig::Bearer(RegistryBearerAuthConfig {
+                token_ref: parse_secret_reference(secret_text, "--registry-secret-ref")?,
+            }))
+        }
+        RegistryAuthTypeArgument::Mtls => {
+            let (Some(certificate_location), Some(key_location)) = (
+                arguments.registry_certificate_location.clone(),
+                arguments.registry_key_location.clone(),
+            ) else {
+                bail!(
+                    "--registry-auth-type mtls needs --registry-certificate-location and --registry-key-location"
+                );
+            };
+            Ok(RegistryAuthConfig::MutualTls(RegistryMutualTlsConfig {
+                certificate_location,
+                key_location,
+            }))
         }
     }
 }

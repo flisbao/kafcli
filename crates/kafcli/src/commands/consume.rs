@@ -1,10 +1,12 @@
-use crate::cli::consume_arguments::{ConsumeArguments, ConsumeFormat, ConsumeWire};
+use crate::cli::consume_arguments::ConsumeArguments;
+use crate::commands::registry_connection::{connect_schema_registry, decoder_needs_registry};
 use crate::execution_context::ExecutionContext;
 use crate::output::envelope_writer::{NdjsonEnvelopeWriter, TableEnvelopeWriter};
 use crate::output::output_format::OutputFormat;
 use crate::output::production_warning::warn_if_production;
 use crate::output::renderer::RenderedOutput;
-use kafcli_core::codec::{RawJsonCodec, ValueDecoder};
+use kafcli_core::codec::ValueDecoder;
+use kafcli_core::codec::codec_selection::build_value_decoder;
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::config::overrides::{ContextOverrides, apply_context_overrides};
 use kafcli_core::config::selection::select_context;
@@ -19,7 +21,8 @@ use std::time::Duration;
 
 /// Reads messages from `--topic` of the selected context and writes each envelope to stdout as it arrives.
 ///
-/// Order: select the context and warn if it is protected; stream the envelopes. Consume only reads, so
+/// Order: select the context and warn if it is protected; build the decoder, which reads the registry
+/// when the wire needs it, before any broker connection; stream the envelopes. Consume only reads, so
 /// it asks no guard and writes no audit record. On success it writes nothing more to stdout; outside
 /// JSON output it reports the message count on stderr. A reader that closes the pipe early ends the run
 /// as a success without that count.
@@ -32,6 +35,20 @@ pub fn consume(
     let selected = select_context(&configuration, execution.global.context.as_deref())?;
     warn_if_production(&selected.name, &selected.context);
 
+    let selection = arguments.decoder_selection();
+    let timeout = Duration::from_secs(arguments.timeout_seconds);
+    let registry = if decoder_needs_registry(&selection) {
+        Some(connect_schema_registry(
+            &selected.name,
+            &selected.context,
+            resolver,
+            timeout,
+        )?)
+    } else {
+        None
+    };
+    let decoder = build_value_decoder(&selection, registry)?;
+
     let overrides = ContextOverrides {
         brokers: execution.global.brokers.clone(),
     };
@@ -40,7 +57,6 @@ pub fn consume(
         insecure: execution.global.insecure,
     };
     let options = build_options(arguments);
-    let decoder = select_value_decoder(arguments.format, arguments.wire);
 
     let (summary, pipe_closed) = match execution.global.output {
         OutputFormat::Json => stream_envelopes(
@@ -48,7 +64,7 @@ pub fn consume(
             resolver,
             &settings,
             &options,
-            decoder,
+            decoder.as_ref(),
             &mut NdjsonEnvelopeWriter::new(io::stdout().lock()),
         )?,
         OutputFormat::Table => stream_envelopes(
@@ -56,7 +72,7 @@ pub fn consume(
             resolver,
             &settings,
             &options,
-            decoder,
+            decoder.as_ref(),
             &mut TableEnvelopeWriter::new(io::stdout().lock()),
         )?,
     };
@@ -126,12 +142,5 @@ fn build_options(arguments: &ConsumeArguments) -> ConsumeOptions {
         redact: arguments.redact.clone(),
         filters: arguments.filters.clone(),
         timeout: Duration::from_secs(arguments.timeout_seconds),
-    }
-}
-
-/// Only JSON values on the raw wire exist in this release, so the pair selects the one codec.
-fn select_value_decoder(format: ConsumeFormat, wire: ConsumeWire) -> &'static dyn ValueDecoder {
-    match (format, wire) {
-        (ConsumeFormat::Json, ConsumeWire::Raw) => &RawJsonCodec,
     }
 }

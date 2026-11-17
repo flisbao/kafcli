@@ -510,6 +510,70 @@ fn add_with_use_on_protected_context_warns() {
 }
 
 #[test]
+fn add_context_with_confluent_registry_round_trips_in_show() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev", "--brokers", "localhost:9092"])
+        .args(["--auth-type", "none"])
+        .args(["--registry-type", "confluent"])
+        .args(["--registry-url", "https://sr.example:8081"])
+        .args([
+            "--registry-auth-type",
+            "basic",
+            "--registry-username",
+            "app",
+        ])
+        .args(["--registry-secret-ref", "env:SR_PASSWORD"])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .env("SR_PASSWORD", "sr-s3cret-value")
+        .args(["--output", "json", "context", "show", "dev"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).into_owned();
+    assert!(!stdout.contains("sr-s3cret-value"), "stdout: {stdout}");
+    let json = parse_stdout_json(&assertion);
+    let registry = &json["data"]["schema_registry"];
+    assert_eq!(registry["registry_type"], "confluent");
+    assert_eq!(registry["url"], "https://sr.example:8081");
+    assert_eq!(registry["auth_type"], "basic");
+    assert_eq!(registry["secret_references"], json!(["env:SR_PASSWORD"]));
+}
+
+#[test]
+fn registry_flags_require_registry_type() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev", "--brokers", "localhost:9092"])
+        .args(["--auth-type", "none"])
+        .args(["--registry-url", "https://sr.example:8081"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--registry-type"));
+}
+
+#[test]
+fn basic_registry_auth_needs_username_and_secret() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev", "--brokers", "localhost:9092"])
+        .args(["--auth-type", "none"])
+        .args(["--registry-type", "confluent"])
+        .args(["--registry-url", "https://sr.example:8081"])
+        .args(["--registry-auth-type", "basic"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--registry-auth-type basic needs --registry-username and --registry-secret-ref",
+        ));
+}
+
+#[test]
 fn list_marks_context_selected_by_environment_variable() {
     let directory = tempfile::tempdir().unwrap();
     add_plaintext_context(directory.path(), "dev", &["--use"]);

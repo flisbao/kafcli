@@ -15,9 +15,9 @@ pub enum ContextCommand {
     },
     /// Add a context to the configuration
     #[command(
-        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected"
+        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
     )]
-    Add(AddContextArguments),
+    Add(Box<AddContextArguments>),
     /// Make a context the current one
     #[command(after_help = "Examples:\n  kafcli context use prd")]
     Use {
@@ -82,6 +82,47 @@ pub struct AddContextArguments {
     /// Replaces an existing context with the same name
     #[arg(long)]
     pub force: bool,
+    /// Schema Registry type; every other --registry-* flag requires it
+    #[arg(long, value_enum)]
+    pub registry_type: Option<RegistryTypeArgument>,
+    /// Schema Registry base URL (required with --registry-type)
+    #[arg(long, requires = "registry_type")]
+    pub registry_url: Option<String>,
+    /// Group of the Azure Schema Registry (azure registry type)
+    #[arg(long, requires = "registry_type")]
+    pub registry_group: Option<String>,
+    /// Authentication of the Schema Registry
+    #[arg(long, value_enum, default_value = "none", requires = "registry_type")]
+    pub registry_auth_type: RegistryAuthTypeArgument,
+    /// Username of the Schema Registry (basic auth type)
+    #[arg(long, requires = "registry_type")]
+    pub registry_username: Option<String>,
+    /// Secret reference of the Schema Registry password (basic) or token (bearer)
+    #[arg(long, requires = "registry_type")]
+    pub registry_secret_ref: Option<String>,
+    /// CA certificate file used to verify the Confluent Schema Registry
+    #[arg(long, requires = "registry_type")]
+    pub registry_ca_location: Option<PathBuf>,
+    /// Client certificate file of the Schema Registry (mtls auth type)
+    #[arg(long, requires = "registry_type")]
+    pub registry_certificate_location: Option<PathBuf>,
+    /// Client private key file of the Schema Registry (mtls auth type)
+    #[arg(long, requires = "registry_type")]
+    pub registry_key_location: Option<PathBuf>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistryTypeArgument {
+    Confluent,
+    Azure,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistryAuthTypeArgument {
+    None,
+    Basic,
+    Bearer,
+    Mtls,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

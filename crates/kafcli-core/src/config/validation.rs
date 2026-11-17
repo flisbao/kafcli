@@ -1,4 +1,7 @@
 use crate::config::model::{AuthConfig, ConnectionContext, SaslCredentialsConfig};
+use crate::config::schema_registry_model::{
+    AzureRegistryConfig, RegistryAuthConfig, SchemaRegistryConfig,
+};
 use crate::error::{CoreError, CoreResult};
 
 /// Checks that `context` may be used, given whether the user asked for `--insecure`.
@@ -16,6 +19,9 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
         return Err(build_validation_error(
             "context has an empty broker address",
         ));
+    }
+    if let Some(schema_registry) = &context.schema_registry {
+        validate_schema_registry(schema_registry, context.protected)?;
     }
     if !context.protected {
         return Ok(());
@@ -38,6 +44,86 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
     Ok(())
 }
 
+/// Checks the Schema Registry of a context. `protected` adds the production rules: HTTPS and authentication.
+pub fn validate_schema_registry(config: &SchemaRegistryConfig, protected: bool) -> CoreResult<()> {
+    validate_registry_url(config.url())?;
+    if let SchemaRegistryConfig::Azure(azure) = config {
+        validate_azure_registry(azure)?;
+    }
+    if protected {
+        validate_protected_registry(config)?;
+    }
+    Ok(())
+}
+
+fn validate_registry_url(url: &str) -> CoreResult<()> {
+    if !is_http_url(url) {
+        return Err(build_validation_error(
+            "schema registry url must start with http:// or https://",
+        ));
+    }
+    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = after_scheme
+        .split_once('/')
+        .map_or(after_scheme, |(authority, _)| authority);
+    if authority.contains('@') {
+        return Err(build_validation_error(
+            "schema registry url must not contain credentials; use auth.secret_ref",
+        ));
+    }
+    if url.contains('?') || url.contains('#') {
+        return Err(build_validation_error(
+            "schema registry url must not contain a query or fragment",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_azure_registry(azure: &AzureRegistryConfig) -> CoreResult<()> {
+    if azure.group.trim().is_empty() {
+        return Err(build_validation_error(
+            "azure schema registry needs a group",
+        ));
+    }
+    if matches!(azure.auth, RegistryAuthConfig::MutualTls(_)) {
+        return Err(build_validation_error(
+            "auth type 'mtls' is only supported by the confluent schema registry",
+        ));
+    }
+    if !matches!(azure.auth, RegistryAuthConfig::Bearer(_)) {
+        return Err(build_validation_error(
+            "azure schema registry needs auth type 'bearer' with a token_ref",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_protected_registry(config: &SchemaRegistryConfig) -> CoreResult<()> {
+    if is_plain_http_url(config.url()) {
+        return Err(build_validation_error(
+            "schema registry over http:// is not allowed on a protected context",
+        ));
+    }
+    if matches!(config.auth(), RegistryAuthConfig::Anonymous) {
+        return Err(build_validation_error(
+            "schema registry auth type 'none' is not allowed on a protected context",
+        ));
+    }
+    Ok(())
+}
+
+fn is_http_url(url: &str) -> bool {
+    is_plain_http_url(url)
+        || url
+            .get(..8)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
+fn is_plain_http_url(url: &str) -> bool {
+    url.get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
+}
+
 fn build_validation_error(message: &str) -> CoreError {
     CoreError::ContextValidation(message.to_string())
 }
@@ -58,6 +144,10 @@ fn sasl_credentials_of(auth: &AuthConfig) -> Option<&SaslCredentialsConfig> {
 mod tests {
     use super::*;
     use crate::config::model::TlsAuthConfig;
+    use crate::config::schema_registry_model::{
+        ConfluentRegistryConfig, RegistryBasicAuthConfig, RegistryBearerAuthConfig,
+        RegistryMutualTlsConfig,
+    };
     use crate::secret::reference::SecretReference;
 
     fn context(auth: AuthConfig, protected: bool) -> ConnectionContext {
@@ -144,5 +234,127 @@ mod tests {
         let protected_tls = context(AuthConfig::Tls(TlsAuthConfig { ca_location: None }), true);
 
         assert!(validate_context(&protected_tls, false).is_ok());
+    }
+
+    fn bearer_auth() -> RegistryAuthConfig {
+        RegistryAuthConfig::Bearer(RegistryBearerAuthConfig {
+            token_ref: "env:SR_TOKEN".parse::<SecretReference>().unwrap(),
+        })
+    }
+
+    fn confluent_registry(url: &str, auth: RegistryAuthConfig) -> SchemaRegistryConfig {
+        SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
+            url: url.to_string(),
+            auth,
+            ca_location: None,
+        })
+    }
+
+    fn azure_registry(group: &str, auth: RegistryAuthConfig) -> SchemaRegistryConfig {
+        SchemaRegistryConfig::Azure(AzureRegistryConfig {
+            url: "https://ns.servicebus.windows.net".to_string(),
+            group: group.to_string(),
+            auth,
+        })
+    }
+
+    #[test]
+    fn rejects_url_with_credentials() {
+        let registry = confluent_registry("https://user:pass@sr:8081", bearer_auth());
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(
+            message,
+            "schema registry url must not contain credentials; use auth.secret_ref"
+        );
+    }
+
+    #[test]
+    fn rejects_url_with_query() {
+        let registry = confluent_registry("https://sr:8081/subjects?x=1", bearer_auth());
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(
+            message,
+            "schema registry url must not contain a query or fragment"
+        );
+    }
+
+    #[test]
+    fn rejects_azure_without_group() {
+        let registry = azure_registry("   ", bearer_auth());
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(message, "azure schema registry needs a group");
+    }
+
+    #[test]
+    fn rejects_azure_without_bearer() {
+        let registry = azure_registry("pedidos", RegistryAuthConfig::Anonymous);
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(
+            message,
+            "azure schema registry needs auth type 'bearer' with a token_ref"
+        );
+    }
+
+    #[test]
+    fn rejects_mtls_on_azure() {
+        let registry = azure_registry(
+            "pedidos",
+            RegistryAuthConfig::MutualTls(RegistryMutualTlsConfig {
+                certificate_location: "/c.pem".into(),
+                key_location: "/k.pem".into(),
+            }),
+        );
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(
+            message,
+            "auth type 'mtls' is only supported by the confluent schema registry"
+        );
+    }
+
+    #[test]
+    fn protected_rejects_http_registry() {
+        let registry = confluent_registry(
+            "http://sr:8081",
+            RegistryAuthConfig::Basic(RegistryBasicAuthConfig {
+                username: "app".to_string(),
+                secret_ref: "env:SR_PASSWORD".parse::<SecretReference>().unwrap(),
+            }),
+        );
+
+        let message = validation_message(validate_schema_registry(&registry, true));
+
+        assert_eq!(
+            message,
+            "schema registry over http:// is not allowed on a protected context"
+        );
+    }
+
+    #[test]
+    fn protected_rejects_anonymous_registry() {
+        let registry = confluent_registry("https://sr:8081", RegistryAuthConfig::Anonymous);
+
+        let message = validation_message(validate_schema_registry(&registry, true));
+
+        assert_eq!(
+            message,
+            "schema registry auth type 'none' is not allowed on a protected context"
+        );
+    }
+
+    #[test]
+    fn unprotected_accepts_http_confluent_without_auth() {
+        let registry = confluent_registry("http://sr:8081", RegistryAuthConfig::Anonymous);
+
+        assert!(validate_schema_registry(&registry, false).is_ok());
     }
 }

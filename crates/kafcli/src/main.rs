@@ -10,11 +10,15 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::context_arguments::ContextCommand;
+use cli::schema_arguments::SchemaCommand;
 use commands::consume::consume;
 use commands::context::{
     add_context, list_contexts, show_context, show_current_context, test_context, use_context,
 };
 use commands::produce::produce;
+use commands::schema::check_compatibility::check_compatibility;
+use commands::schema::get_schema::get_schema;
+use commands::schema::register_schema::register_schema;
 use execution_context::ExecutionContext;
 use exit_code::{KafcliExitCode, resolve_exit_code};
 use kafcli_core::secret::composite_resolver::CompositeSecretResolver;
@@ -26,7 +30,34 @@ use std::io::{self, ErrorKind as IoErrorKind, Write};
 use std::process::ExitCode;
 use std::time::Duration;
 
+/// Stack size for the thread that runs kafcli. apache-avro lets one datum nest up to 256 decoder
+/// levels (kafcli's 64 JSON levels need about three apache levels each), which needs about 8 to 12 MiB
+/// in a debug build. The main thread has 8 MiB on Linux and 1 MiB on Windows, so the work runs on a
+/// thread with this much stack instead of on the main thread.
+const CLI_THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    let worker = std::thread::Builder::new()
+        .name("kafcli-main".into())
+        .stack_size(CLI_THREAD_STACK_BYTES)
+        .spawn(run_cli);
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            write_error_line(&format!("error: could not start kafcli thread: {error}"));
+            return ExitCode::from(KafcliExitCode::Failure as u8);
+        }
+    };
+    match worker.join() {
+        Ok(exit_code) => exit_code,
+        Err(_) => {
+            write_error_line("error: kafcli thread panicked");
+            ExitCode::from(KafcliExitCode::Failure as u8)
+        }
+    }
+}
+
+fn run_cli() -> ExitCode {
     let arguments = match CommandLineArguments::try_parse() {
         Ok(arguments) => arguments,
         Err(usage_error) => return report_usage_error(&usage_error),
@@ -133,5 +164,14 @@ fn run(
         TopLevelCommand::Consume(consume_arguments) => {
             consume(&execution, resolver, &consume_arguments)
         }
+        TopLevelCommand::Schema { command } => match command {
+            SchemaCommand::Register(register_arguments) => {
+                register_schema(&execution, resolver, &TerminalPrompter, &register_arguments)
+            }
+            SchemaCommand::Get(get_arguments) => get_schema(&execution, resolver, &get_arguments),
+            SchemaCommand::CheckCompat(check_arguments) => {
+                check_compatibility(&execution, resolver, &check_arguments)
+            }
+        },
     }
 }

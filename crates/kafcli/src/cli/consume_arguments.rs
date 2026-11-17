@@ -1,17 +1,41 @@
+use crate::cli::schema_source_arguments::SchemaSourceArguments;
+use kafcli_core::codec::codec_selection::{DecoderSelection, ValueFormat, WireFormat};
 use kafcli_core::ops::consume::message_filter::HeaderFilter;
 use kafcli_core::ops::consume::start_position::StartPosition;
 use std::str::FromStr;
 
-/// Message format of the values. Only `json` exists in this release.
+/// Message format of the values.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsumeFormat {
     Json,
+    Avro,
 }
 
-/// Wire encoding of the values. Only `raw` exists in this release.
+impl ConsumeFormat {
+    pub fn to_value_format(self) -> ValueFormat {
+        match self {
+            Self::Json => ValueFormat::Json,
+            Self::Avro => ValueFormat::Avro,
+        }
+    }
+}
+
+/// Wire encoding of the values.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsumeWire {
     Raw,
+    Confluent,
+    Azure,
+}
+
+impl ConsumeWire {
+    pub fn to_wire_format(self) -> WireFormat {
+        match self {
+            Self::Raw => WireFormat::Raw,
+            Self::Confluent => WireFormat::Confluent,
+            Self::Azure => WireFormat::Azure,
+        }
+    }
 }
 
 #[derive(clap::Args)]
@@ -40,6 +64,8 @@ pub struct ConsumeArguments {
     /// Wire encoding of the values
     #[arg(long, value_enum, default_value_t = ConsumeWire::Raw)]
     pub wire: ConsumeWire,
+    #[command(flatten)]
+    pub schema_source: SchemaSourceArguments,
     /// Largest value kept, in bytes; longer values are truncated (0 means no limit)
     #[arg(long, value_name = "BYTES", default_value_t = 2048)]
     pub max_bytes: usize,
@@ -52,6 +78,17 @@ pub struct ConsumeArguments {
     /// Seconds without progress before giving up (1 to 3600)
     #[arg(long, value_name = "N", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub timeout_seconds: u64,
+}
+
+impl ConsumeArguments {
+    /// Everything the decoder choice depends on, from the flags.
+    pub fn decoder_selection(&self) -> DecoderSelection {
+        DecoderSelection {
+            format: self.format.to_value_format(),
+            wire: self.wire.to_wire_format(),
+            schema: self.schema_source.to_schema_source(),
+        }
+    }
 }
 
 fn parse_start_position(text: &str) -> Result<StartPosition, String> {
