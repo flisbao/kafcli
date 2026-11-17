@@ -374,7 +374,11 @@ fn check_registry_type(registry: &dyn SchemaRegistry, wire: WireFormat) -> CoreR
 }
 
 /// Reads an id the user typed. A Confluent id must be digits; with `raw` the registry type decides.
-fn schema_id_from_text(text: &str, wire: WireFormat, registry_type: &str) -> CoreResult<SchemaId> {
+pub fn schema_id_from_text(
+    text: &str,
+    wire: WireFormat,
+    registry_type: &str,
+) -> CoreResult<SchemaId> {
     let confluent = match wire {
         WireFormat::Confluent => true,
         WireFormat::Azure => false,
@@ -431,7 +435,7 @@ fn ensure_kind(name: &str, expected: SchemaKind, actual: SchemaKind) -> CoreResu
 }
 
 /// Reads a schema file of at most 1 MiB. The file is never read past the limit.
-fn read_schema_file(path: &Path) -> CoreResult<String> {
+pub fn read_schema_file(path: &Path) -> CoreResult<String> {
     let shown = neutralize_registry_text(&path.display().to_string());
     let unreadable =
         |error: io::Error| invalid(format!("schema file '{shown}' could not be read: {error}"));

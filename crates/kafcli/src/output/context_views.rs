@@ -158,7 +158,7 @@ fn build_summary_table<'a>(summaries: impl IntoIterator<Item = &'a ContextSummar
     table
 }
 
-fn build_table(headers: &[&str]) -> Table {
+pub fn build_table(headers: &[&str]) -> Table {
     let mut table = Table::new();
     *table.style_mut() = UTF8_FULL_CONDENSED;
     table.set_header(headers.iter().map(Cell::new).collect::<Vec<_>>());

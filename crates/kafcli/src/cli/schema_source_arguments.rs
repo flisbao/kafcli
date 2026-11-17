@@ -48,6 +48,6 @@ impl SchemaSourceArguments {
     }
 }
 
-fn parse_schema_version(text: &str) -> Result<SchemaVersionSelector, String> {
+pub fn parse_schema_version(text: &str) -> Result<SchemaVersionSelector, String> {
     SchemaVersionSelector::from_str(text).map_err(|error| error.to_string())
 }

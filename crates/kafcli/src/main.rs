@@ -10,11 +10,15 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::context_arguments::ContextCommand;
+use cli::schema_arguments::SchemaCommand;
 use commands::consume::consume;
 use commands::context::{
     add_context, list_contexts, show_context, show_current_context, test_context, use_context,
 };
 use commands::produce::produce;
+use commands::schema::check_compatibility::check_compatibility;
+use commands::schema::get_schema::get_schema;
+use commands::schema::register_schema::register_schema;
 use execution_context::ExecutionContext;
 use exit_code::{KafcliExitCode, resolve_exit_code};
 use kafcli_core::secret::composite_resolver::CompositeSecretResolver;
@@ -160,5 +164,14 @@ fn run(
         TopLevelCommand::Consume(consume_arguments) => {
             consume(&execution, resolver, &consume_arguments)
         }
+        TopLevelCommand::Schema { command } => match command {
+            SchemaCommand::Register(register_arguments) => {
+                register_schema(&execution, resolver, &TerminalPrompter, &register_arguments)
+            }
+            SchemaCommand::Get(get_arguments) => get_schema(&execution, resolver, &get_arguments),
+            SchemaCommand::CheckCompat(check_arguments) => {
+                check_compatibility(&execution, resolver, &check_arguments)
+            }
+        },
     }
 }

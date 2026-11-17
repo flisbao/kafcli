@@ -506,3 +506,333 @@ fn registry_401_never_prints_token() {
         "the token was never sent: {requests:?}"
     );
 }
+
+// ---- kafcli schema register, get and check-compat (no broker) ----
+
+const SUBJECT: &str = "pedidos-value";
+const COMPATIBILITY_PATH: &str =
+    "/compatibility/subjects/pedidos-value/versions/latest?verbose=true";
+const CONFLUENT_REGISTER_PATH: &str = "/subjects/pedidos-value/versions";
+const AZURE_PUT_PATH: &str = "/$schemaGroups/pedidos/schemas/pedidos-value?api-version=2023-07-01";
+const AVRO_WITH_DEFAULT: &str = r#"{"type":"record","name":"Pedido","fields":[{"name":"id","type":"long"},{"name":"nota","type":"string","default":""}]}"#;
+const AVRO_TYPE_CHANGED: &str =
+    r#"{"type":"record","name":"Pedido","fields":[{"name":"id","type":"string"}]}"#;
+
+fn register_arguments(schema_file: &Path) -> Vec<String> {
+    vec![
+        "schema".to_string(),
+        "register".to_string(),
+        "--subject".to_string(),
+        SUBJECT.to_string(),
+        "--schema-file".to_string(),
+        schema_file.display().to_string(),
+    ]
+}
+
+/// A protected context without a registry: protected contexts refuse plain http registries, and the
+/// guard runs before the registry is contacted, so no registry is needed to test the abort.
+fn add_protected_context(directory: &Path) {
+    add_context(
+        directory,
+        "prd",
+        &["--auth-type", "tls", "--protected", "--use"],
+    );
+}
+
+#[test]
+fn register_validates_schema_locally_before_any_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    add_confluent_context(directory.path(), &registry.url());
+    let broken = write_schema_file(directory.path(), r#"{"type":"record","name":"Broken""#);
+
+    build_kafcli_command(directory.path())
+        .args(register_arguments(&broken))
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("is not a valid Avro schema"));
+
+    assert!(registry.recorded_requests().is_empty());
+}
+
+#[test]
+fn register_on_protected_without_tty_and_yes_aborts_with_exit_3() {
+    let directory = tempfile::tempdir().unwrap();
+    add_protected_context(directory.path());
+    let schema = write_schema_file(directory.path(), AVRO_SCHEMA);
+
+    build_kafcli_command(directory.path())
+        .args(register_arguments(&schema))
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "confirmation required on protected context: pass --yes",
+        ));
+
+    let audit = std::fs::read_to_string(directory.path().join("state").join("audit.log")).unwrap();
+    assert!(audit.contains("\"outcome\":\"aborted\""), "audit: {audit}");
+    assert!(
+        audit.contains("\"command\":\"schema register\""),
+        "audit: {audit}"
+    );
+    assert!(audit.contains("subject=pedidos-value"), "audit: {audit}");
+}
+
+#[test]
+fn register_audit_has_no_schema_text() {
+    const MARKER: &str = "CANARY_FIELD_7731";
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![route(
+        "POST",
+        CONFLUENT_REGISTER_PATH,
+        200,
+        &[],
+        r#"{"id":42}"#.to_string(),
+    )])
+    .unwrap();
+    add_confluent_context(directory.path(), &registry.url());
+    let schema = write_schema_file(
+        directory.path(),
+        &format!(
+            r#"{{"type":"record","name":"Pedido","fields":[{{"name":"{MARKER}","type":"long"}}]}}"#
+        ),
+    );
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json"])
+        .args(register_arguments(&schema))
+        .assert()
+        .success();
+
+    let data = parse_stdout_json(&assertion.get_output().stdout)["data"].clone();
+    assert_eq!(data["subject"], SUBJECT);
+    assert_eq!(data["schema_id"], "42");
+    assert_eq!(data["type"], "avro");
+    let audit = std::fs::read_to_string(directory.path().join("state").join("audit.log")).unwrap();
+    assert!(audit.contains("\"outcome\":\"executed\""), "audit: {audit}");
+    assert!(audit.contains("\"schema_id\":\"42\""), "audit: {audit}");
+    assert!(audit.contains("subject=pedidos-value"), "audit: {audit}");
+    assert!(!audit.contains(MARKER), "audit leaked schema text: {audit}");
+}
+
+#[test]
+fn azure_register_sends_put_and_reports_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![route(
+        "PUT",
+        AZURE_PUT_PATH,
+        200,
+        &[("Schema-Id", AZURE_SCHEMA_ID), ("Schema-Version", "1")],
+        "{}".to_string(),
+    )])
+    .unwrap();
+    add_azure_context(directory.path(), &registry.url());
+    let schema = write_schema_file(directory.path(), AVRO_SCHEMA);
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json"])
+        .args(register_arguments(&schema))
+        .assert()
+        .success();
+
+    let data = parse_stdout_json(&assertion.get_output().stdout)["data"].clone();
+    assert_eq!(data["schema_id"], AZURE_SCHEMA_ID);
+    assert_eq!(data["version"], 1);
+    let requests = registry.recorded_requests();
+    assert_eq!(requests.len(), 1, "requests: {requests:?}");
+    assert_eq!(requests[0].method, "PUT");
+}
+
+#[test]
+fn azure_check_compat_is_unsupported() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    add_azure_context(directory.path(), &registry.url());
+    let schema = write_schema_file(directory.path(), AVRO_SCHEMA);
+
+    build_kafcli_command(directory.path())
+        .args([
+            "schema",
+            "check-compat",
+            "--subject",
+            SUBJECT,
+            "--schema-file",
+        ])
+        .arg(&schema)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "check-compat is not supported by the Azure Schema Registry",
+        ));
+
+    assert!(registry.recorded_requests().is_empty());
+}
+
+#[test]
+fn azure_register_json_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    add_azure_context(directory.path(), &registry.url());
+    let schema = write_schema_file(directory.path(), r#"{"type":"object"}"#);
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "register", "--subject", SUBJECT, "--type", "json"])
+        .arg("--schema-file")
+        .arg(&schema)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "JSON Schema on the Azure Schema Registry is not supported by kafcli",
+        ));
+
+    assert!(registry.recorded_requests().is_empty());
+}
+
+#[test]
+fn get_requires_subject_or_id() {
+    let directory = tempfile::tempdir().unwrap();
+    add_confluent_context(directory.path(), "http://127.0.0.1:1");
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "get"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("--subject").and(predicate::str::contains("--id")));
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "get", "--subject", SUBJECT, "--id", "7"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn get_json_output_has_kafcli_output_envelope() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![route(
+        "GET",
+        "/schemas/ids/7",
+        200,
+        &[],
+        json!({"schema": AVRO_SCHEMA}).to_string(),
+    )])
+    .unwrap();
+    add_confluent_context(directory.path(), &registry.url());
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json", "schema", "get", "--id", "7"])
+        .assert()
+        .success();
+
+    let envelope = parse_stdout_json(&assertion.get_output().stdout);
+    assert_eq!(envelope["kafcli_output"], 1);
+    let data = &envelope["data"];
+    assert_eq!(data["schema_id"], "7");
+    assert_eq!(data["type"], "avro");
+    assert!(data["subject"].is_null(), "data: {data}");
+    assert_eq!(data["schema"], AVRO_SCHEMA);
+}
+
+#[test]
+fn get_table_neutralizes_control_characters() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![route(
+        "GET",
+        "/schemas/ids/7",
+        200,
+        &[],
+        json!({"schema": "not json \u{1b}[2J"}).to_string(),
+    )])
+    .unwrap();
+    add_confluent_context(directory.path(), &registry.url());
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "get", "--id", "7"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not json ?[2J"))
+        .stdout(predicate::str::contains('\u{1b}').not());
+}
+
+#[test]
+fn check_compat_incompatible_prints_view_and_exits_1() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![route(
+        "POST",
+        COMPATIBILITY_PATH,
+        200,
+        &[],
+        r#"{"is_compatible":false,"messages":["type changed"]}"#.to_string(),
+    )])
+    .unwrap();
+    add_confluent_context(directory.path(), &registry.url());
+    let schema = write_schema_file(directory.path(), AVRO_TYPE_CHANGED);
+
+    let assertion = build_kafcli_command(directory.path())
+        .args([
+            "--output",
+            "json",
+            "schema",
+            "check-compat",
+            "--subject",
+            SUBJECT,
+        ])
+        .arg("--schema-file")
+        .arg(&schema)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "schema is not compatible with subject 'pedidos-value' version latest",
+        ));
+
+    let data = parse_stdout_json(&assertion.get_output().stdout)["data"].clone();
+    assert_eq!(data["compatible"], false);
+    assert_eq!(data["version"], "latest");
+    assert_eq!(data["messages"][0], "type changed");
+}
+
+#[test]
+fn check_compat_compatible_exits_0() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![route(
+        "POST",
+        COMPATIBILITY_PATH,
+        200,
+        &[],
+        r#"{"is_compatible":true}"#.to_string(),
+    )])
+    .unwrap();
+    add_confluent_context(directory.path(), &registry.url());
+    let schema = write_schema_file(directory.path(), AVRO_WITH_DEFAULT);
+
+    let assertion = build_kafcli_command(directory.path())
+        .args([
+            "--output",
+            "json",
+            "schema",
+            "check-compat",
+            "--subject",
+            SUBJECT,
+        ])
+        .arg("--schema-file")
+        .arg(&schema)
+        .assert()
+        .success();
+
+    let data = parse_stdout_json(&assertion.get_output().stdout)["data"].clone();
+    assert_eq!(data["compatible"], true);
+}
+
+#[test]
+fn help_lists_examples() {
+    for subcommand in ["register", "get", "check-compat"] {
+        build_kafcli_command(tempfile::tempdir().unwrap().path())
+            .args(["schema", subcommand, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Examples:"))
+            .stdout(predicate::str::contains(format!(
+                "kafcli schema {subcommand}"
+            )));
+    }
+}

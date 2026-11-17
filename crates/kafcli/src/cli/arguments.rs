@@ -1,6 +1,7 @@
 use crate::cli::consume_arguments::ConsumeArguments;
 use crate::cli::context_arguments::ContextCommand;
 use crate::cli::produce_arguments::ProduceArguments;
+use crate::cli::schema_arguments::SchemaCommand;
 use crate::output::output_format::OutputFormat;
 use std::path::PathBuf;
 
@@ -83,4 +84,17 @@ Notes:
   Avro values larger than --max-bytes are truncated and not decoded; use --max-bytes 0 for large Avro values.
   Table output shows one line per message; use --output json for the envelopes."#)]
     Consume(ConsumeArguments),
+    /// Register, read and check schemas in the Schema Registry
+    #[command(after_help = r#"Examples:
+  kafcli schema register --subject pedidos-value --schema-file pedido.avsc
+  kafcli schema get --subject pedidos-value --output json
+  kafcli schema check-compat --subject pedidos-value --schema-file pedido-v2.avsc
+
+Notes:
+  Only `schema register` writes to the registry; `produce` never registers a schema.
+  `schema get` and `schema check-compat` read the context's registry and never write to it."#)]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
 }

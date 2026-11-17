@@ -665,3 +665,93 @@ fn consume_deeply_nested_avro_does_not_crash() {
         "decode_error: {decode_error}"
     );
 }
+
+/// Adds a field with a default: a backward-compatible change under the registry's default rule.
+const AVRO_WITH_DEFAULT_FIELD: &str = r#"{"type":"record","name":"Pedido","fields":[{"name":"id","type":"long"},{"name":"nota","type":"string","default":""}]}"#;
+/// Changes the type of `id`: not readable with the old schema, so not compatible.
+const AVRO_WITH_TYPE_CHANGE: &str =
+    r#"{"type":"record","name":"Pedido","fields":[{"name":"id","type":"string"}]}"#;
+
+#[test]
+#[ignore]
+fn register_get_by_subject_and_id() {
+    wait_for_registry();
+    let directory = tempfile::tempdir().unwrap();
+    let subject = unique_name("pedidos-register");
+    add_confluent_context(directory.path());
+    let schema_file = write_schema_file(directory.path(), "pedido.avsc", AVRO_RECORD);
+
+    let registered = build_kafcli_command(directory.path())
+        .args(["--output", "json", "schema", "register", "--subject"])
+        .arg(&subject)
+        .arg("--schema-file")
+        .arg(&schema_file)
+        .assert()
+        .success();
+    let data =
+        serde_json::from_slice::<Value>(&registered.get_output().stdout).unwrap()["data"].clone();
+    let id = data["schema_id"].as_str().unwrap().to_string();
+    assert_eq!(data["subject"], subject.as_str());
+    assert_eq!(data["type"], "avro");
+
+    let by_subject = build_kafcli_command(directory.path())
+        .args(["--output", "json", "schema", "get", "--subject"])
+        .arg(&subject)
+        .assert()
+        .success();
+    let subject_data =
+        serde_json::from_slice::<Value>(&by_subject.get_output().stdout).unwrap()["data"].clone();
+    assert_eq!(subject_data["schema"], AVRO_RECORD);
+    assert_eq!(subject_data["schema_id"], id.as_str());
+    assert_eq!(subject_data["version"], 1);
+
+    let by_id = build_kafcli_command(directory.path())
+        .args(["--output", "json", "schema", "get", "--id", &id])
+        .assert()
+        .success();
+    let id_data =
+        serde_json::from_slice::<Value>(&by_id.get_output().stdout).unwrap()["data"].clone();
+    assert_eq!(id_data["schema"], AVRO_RECORD);
+    assert_eq!(id_data["schema_id"], id.as_str());
+}
+
+#[test]
+#[ignore]
+fn check_compat_accepts_added_field_with_default() {
+    let directory = tempfile::tempdir().unwrap();
+    let subject = unique_name("pedidos-compat-ok");
+    register_confluent_schema(&subject, SchemaKind::Avro, AVRO_RECORD);
+    add_confluent_context(directory.path());
+    let candidate = write_schema_file(directory.path(), "v2.avsc", AVRO_WITH_DEFAULT_FIELD);
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json", "schema", "check-compat", "--subject"])
+        .arg(&subject)
+        .arg("--schema-file")
+        .arg(&candidate)
+        .assert()
+        .success();
+
+    let data =
+        serde_json::from_slice::<Value>(&assertion.get_output().stdout).unwrap()["data"].clone();
+    assert_eq!(data["compatible"], true);
+}
+
+#[test]
+#[ignore]
+fn check_compat_rejects_type_change_with_exit_1() {
+    let directory = tempfile::tempdir().unwrap();
+    let subject = unique_name("pedidos-compat-bad");
+    register_confluent_schema(&subject, SchemaKind::Avro, AVRO_RECORD);
+    add_confluent_context(directory.path());
+    let candidate = write_schema_file(directory.path(), "v2.avsc", AVRO_WITH_TYPE_CHANGE);
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "check-compat", "--subject"])
+        .arg(&subject)
+        .arg("--schema-file")
+        .arg(&candidate)
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("is not compatible with subject"));
+}
