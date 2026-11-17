@@ -201,10 +201,54 @@ fn envelope_round_trip_preserves_key_headers_and_value() {
             .all(|(_, headers, _)| headers.as_array().map(Vec::len) == Some(2)),
         "{source_rows:?}"
     );
+    let source_values: Vec<Value> = source_rows
+        .iter()
+        .map(|(_, _, value)| value.clone())
+        .collect();
+    assert_eq!(
+        source_values,
+        vec![
+            serde_json::json!({"id": 1}),
+            serde_json::json!({"id": 2}),
+            serde_json::json!({"id": 3}),
+        ]
+    );
     assert_eq!(
         key_headers_values(&parse_envelopes(&consumed_target)),
         source_rows
     );
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn json_null_value_round_trips_as_null_bytes_not_tombstone() {
+    let source = unique_name("kafcli-cli-null-source");
+    let target = unique_name("kafcli-cli-null-target");
+    let _source_guard = TopicGuard::create(&source);
+    let _target_guard = TopicGuard::create(&target);
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    build_kafcli_command(directory.path())
+        .args([
+            "produce", "--topic", &source, "--value", "null", "--key", "nulo",
+        ])
+        .assert()
+        .success();
+
+    let consumed_source = consume_envelopes(directory.path(), &source);
+    let source_envelopes = parse_envelopes(&consumed_source);
+    assert_eq!(source_envelopes.len(), 1);
+    assert!(source_envelopes[0]["value"].is_null());
+    assert_eq!(source_envelopes[0]["value_base64"], "bnVsbA==");
+
+    produce_envelopes(directory.path(), &target, &consumed_source);
+    let consumed_target = parse_envelopes(&consume_envelopes(directory.path(), &target));
+
+    // A tombstone would have no value_base64; the null payload must arrive as the bytes `null`.
+    assert_eq!(consumed_target.len(), 1);
+    assert_eq!(consumed_target[0]["key"], "nulo");
+    assert_eq!(consumed_target[0]["value_base64"], "bnVsbA==");
+    assert!(consumed_target[0]["decode_error"].is_null());
 }
 
 #[test]
