@@ -165,7 +165,7 @@ impl RegistryHttpClient {
             request = request.body(body);
         }
         let response = request.send().map_err(|error| {
-            registry_error(format!(
+            transient_registry_error(format!(
                 "request to schema registry failed: {}",
                 self.describe_transport_error(error)
             ))
@@ -185,7 +185,7 @@ impl RegistryHttpClient {
         let mut limited = Read::take(response, MAX_RESPONSE_BYTES + 1);
         let mut body = Vec::new();
         limited.read_to_end(&mut body).map_err(|error| {
-            registry_error(format!(
+            transient_registry_error(format!(
                 "could not read the schema registry response: {}",
                 self.describe_body_error(&error)
             ))
@@ -246,6 +246,19 @@ impl RegistryHttpClient {
 
 fn registry_error(message: impl Into<String>) -> CoreError {
     CoreError::SchemaRegistry(message.into())
+}
+
+fn transient_registry_error(message: impl Into<String>) -> CoreError {
+    CoreError::SchemaRegistryTransient(message.into())
+}
+
+/// Error for a registry answer outside 2xx. HTTP 5xx is transient because the registry may recover.
+pub fn registry_status_error(status: u16, message: impl Into<String>) -> CoreError {
+    if status >= 500 {
+        transient_registry_error(message)
+    } else {
+        registry_error(message)
+    }
 }
 
 fn read_file(path: &Path, description: &str) -> CoreResult<Vec<u8>> {

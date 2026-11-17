@@ -2,7 +2,7 @@ use super::path_segment::encode_path_segment;
 use super::registered_schema::{
     CompatibilityReport, RegisteredSchema, SchemaId, SchemaKind, SchemaVersionSelector,
 };
-use super::registry_http_client::{RegistryHttpClient, RegistryResponse};
+use super::registry_http_client::{RegistryHttpClient, RegistryResponse, registry_status_error};
 use super::schema_registry::SchemaRegistry;
 use crate::error::{CoreError, CoreResult};
 use reqwest::Method;
@@ -103,7 +103,7 @@ impl AzureSchemaRegistry {
                 text.push_str(&sanitized);
             }
         }
-        registry_error(text)
+        registry_status_error(response.status, text)
     }
 
     /// Reads the kind from the `serialization` parameter of `Content-Type`, ignoring case.

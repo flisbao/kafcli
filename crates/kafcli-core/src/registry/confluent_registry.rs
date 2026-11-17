@@ -2,7 +2,7 @@ use super::path_segment::encode_path_segment;
 use super::registered_schema::{
     CompatibilityReport, RegisteredSchema, SchemaId, SchemaKind, SchemaVersionSelector,
 };
-use super::registry_http_client::{RegistryHttpClient, RegistryResponse};
+use super::registry_http_client::{RegistryHttpClient, RegistryResponse, registry_status_error};
 use super::schema_registry::SchemaRegistry;
 use crate::error::{CoreError, CoreResult};
 use reqwest::Method;
@@ -118,7 +118,7 @@ impl ConfluentSchemaRegistry {
                 text.push_str(&sanitized);
             }
         }
-        registry_error(text)
+        registry_status_error(response.status, text)
     }
 
     /// Redacts secrets, replaces control characters with `?` and keeps at most 200 characters.
