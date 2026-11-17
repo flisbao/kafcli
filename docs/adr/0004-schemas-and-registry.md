@@ -39,7 +39,8 @@ As decisões abaixo valem para o código do branch `feat/schemas`. Onde a especi
 - `kafcli schema register` é o único comando que registra schema. `produce` nunca chama `register_schema`, e a regra é verificada pelo teste `produce_never_sends_put_or_post_to_registry`.
 - O schema vem sempre de `--schema-file` ou do registry, pelo id ou pelo subject. Nunca é lido de dentro de uma mensagem.
 - O arquivo de schema é lido com limite de 1 MiB e validado localmente (`AvroSchema::parse` ou `JsonSchemaValidator::parse`) antes de qualquer requisição.
-- `schema register` passa pelo guard de escrita (`OperationLevel::Write`), com a descrição `register schema for subject <S>` e o subject como alvo de confirmação. Em contexto protegido sem terminal e sem `--yes`, sai com código 3.
+- `schema register` passa pelo guard de escrita (`OperationLevel::Write`), com a descrição `register schema for subject <S>` e o subject como alvo de confirmação. Em contexto protegido sem terminal e sem `--yes`, sai com código 3. O guard roda antes de construir o cliente do registry, então nenhuma requisição sai antes da aprovação.
+- No Confluent, `schema register` mostra `version: null`: a API devolve só o id do schema, e a versão não é consultada em outra requisição.
 - `schema get` e `schema check-compat` são leituras: não passam pelo guard e não gravam no audit log.
 - O audit log de `schema register` tem contexto, comando `schema register`, `target` `subject=<S>`, `after` com `schema_id` e `version`, e o outcome `aborted`, `failed` ou `executed` (nunca `dry-run`). Nunca tem o texto do schema. Falha ao gravar o audit vira aviso no stderr.
 - Schema de Avro e de JSON Schema são registrados com `schemaType` `AVRO` ou `JSON` no Confluent. No Azure, só Avro: `JSON Schema on the Azure Schema Registry is not supported by kafcli`.
@@ -49,6 +50,7 @@ As decisões abaixo valem para o código do branch `feat/schemas`. Onde a especi
 
 ### Segurança e limites do cliente
 
+- As configurações do registry são validadas sempre que um registry é conectado (`schema get`, `schema check-compat`, `schema register`, `produce` e `consume` que usam schema). Vale também a regra de contexto protegido: registry `http://` e registry sem autenticação (`none`) são recusados antes de qualquer requisição, mesmo em um arquivo de configuração editado à mão.
 - Segredos do registry (senha `basic`, token `bearer`) vêm só de `SecretReference`, são resolvidos na construção do cliente e ficam em `secrecy::SecretString`. O header `Authorization` é marcado como sensível. Erros do `reqwest` passam por `without_url()`. A URL do registry não pode conter `user:pass@`.
 - Texto vindo do registry (mensagens de erro, mensagens de compatibilidade, subjects e ids de headers) é neutralizado e limitado a 200 caracteres já no core (`neutralize_registry_text`). No máximo 50 mensagens de compatibilidade são mantidas.
 - Corpo de resposta limitado a 8 MiB. Timeout por requisição igual a `--timeout-seconds` (1 a 3600, padrão 30).
@@ -66,6 +68,8 @@ As decisões abaixo valem para o código do branch `feat/schemas`. Onde a especi
 ### Cache de schemas
 
 - O decodificador guarda no máximo 256 schemas por execução (`SCHEMA_CACHE_CAPACITY`), incluindo falhas, para que um id ruim não gere uma requisição por mensagem. Não há cache global entre execuções.
+- Falha definitiva (id inexistente, schema que não faz parse, tipo não suportado, referências, tipo divergente do esperado) fica no cache pelo resto da execução: um id 404 nunca é pedido de novo.
+- Falha transitória (erro de transporte, timeout, HTTP 5xx) fica no cache por 30 segundos (`TRANSIENT_FAILURE_TTL`). Depois disso, a próxima mensagem com o mesmo id busca o schema de novo. Assim, uma oscilação do registry durante `consume --follow` não vira `decode_error` para todas as mensagens seguintes.
 
 ### Wire Azure
 
