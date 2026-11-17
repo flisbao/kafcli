@@ -11,5 +11,6 @@ pub mod connection;
 pub mod error;
 pub mod guard;
 pub mod message;
+pub mod ops;
 pub mod secret;
 pub mod template;
