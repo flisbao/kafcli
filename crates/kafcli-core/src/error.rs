@@ -24,6 +24,8 @@ pub enum CoreError {
     TopicNotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("value does not match schema at '{pointer}': {reason}")]
+    SchemaValidation { pointer: String, reason: String },
     #[error("schema registry error: {0}")]
     SchemaRegistry(String),
     #[error("template error: {0}")]

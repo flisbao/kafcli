@@ -13,6 +13,7 @@ keyring = ["dep:keyring"]
 test-support = []
 
 [dependencies]
+apache-avro.workspace = true
 base64.workspace = true
 dirs.workspace = true
 figment.workspace = true
