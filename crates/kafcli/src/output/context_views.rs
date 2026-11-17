@@ -63,7 +63,7 @@ impl RegistryDetailView {
         };
         Self {
             registry_type: config.type_name().to_string(),
-            url: config.url().to_string(),
+            url: redact_url_userinfo(config.url()),
             group,
             auth_type: config.auth().type_name().to_string(),
             secret_references: config
@@ -73,6 +73,19 @@ impl RegistryDetailView {
                 .map(ToString::to_string)
                 .collect(),
         }
+    }
+}
+
+/// Hides the `user:password@` part of the URL authority, so a hand-edited URL is never echoed.
+fn redact_url_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, remainder) = rest.split_at(authority_end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://***@{host}{remainder}"),
+        None => url.to_string(),
     }
 }
 
@@ -198,6 +211,7 @@ fn join_or_dash(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kafcli_core::config::schema_registry_model::{ConfluentRegistryConfig, RegistryAuthConfig};
 
     #[test]
     fn context_list_neutralizes_terminal_control_characters() {
@@ -225,5 +239,34 @@ mod tests {
         };
 
         assert_eq!(view.render_table(), "?[2Jdev");
+    }
+
+    fn confluent_url(url: &str) -> RegistryDetailView {
+        RegistryDetailView::from_config(&SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
+            url: url.to_string(),
+            auth: RegistryAuthConfig::Anonymous,
+            ca_location: None,
+        }))
+    }
+
+    #[test]
+    fn hides_userinfo_of_registry_url() {
+        let view = confluent_url("https://user:pass@sr.example:8081/base");
+
+        assert_eq!(view.url, "https://***@sr.example:8081/base");
+    }
+
+    #[test]
+    fn keeps_registry_url_without_userinfo() {
+        let view = confluent_url("https://sr.example:8081/base");
+
+        assert_eq!(view.url, "https://sr.example:8081/base");
+    }
+
+    #[test]
+    fn keeps_at_sign_outside_the_authority() {
+        let view = confluent_url("https://sr.example:8081/topics/a@b");
+
+        assert_eq!(view.url, "https://sr.example:8081/topics/a@b");
     }
 }

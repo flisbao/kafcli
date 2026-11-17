@@ -15,7 +15,7 @@ pub enum ContextCommand {
     },
     /// Add a context to the configuration
     #[command(
-        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected"
+        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
     )]
     Add(Box<AddContextArguments>),
     /// Make a context the current one
