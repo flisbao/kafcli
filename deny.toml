@@ -13,4 +13,6 @@ allow = [
   "Zlib",
   "OpenSSL",
   "MPL-2.0",
+  "MIT-0",
+  "CDLA-Permissive-2.0",
 ]
