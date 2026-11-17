@@ -10,6 +10,7 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::context_arguments::ContextCommand;
+use commands::consume::consume;
 use commands::context::{
     add_context, list_contexts, show_context, show_current_context, test_context, use_context,
 };
@@ -43,7 +44,10 @@ fn main() -> ExitCode {
 
 /// Prints the command's text first, then its trailing error, so a partly failed run keeps its report on stdout.
 fn write_command_output(output: RenderedOutput) -> ExitCode {
-    let stdout_exit_code = write_result_to_stdout(&output.text);
+    let stdout_exit_code = match &output.text {
+        Some(text) => write_result_to_stdout(text),
+        None => ExitCode::SUCCESS,
+    };
     match output.trailing_error {
         Some(error) => {
             write_error_line(&format!("error: {error:#}"));
@@ -125,6 +129,9 @@ fn run(
         }
         TopLevelCommand::Produce(produce_arguments) => {
             produce(&execution, resolver, &TerminalPrompter, &produce_arguments)
+        }
+        TopLevelCommand::Consume(consume_arguments) => {
+            consume(&execution, resolver, &consume_arguments)
         }
     }
 }

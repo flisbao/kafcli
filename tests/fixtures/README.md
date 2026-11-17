@@ -24,6 +24,21 @@ docker compose -f tests/fixtures/compose.yaml down -v
 
 O comando `down -v` remove os containers e os volumes; ele deve rodar mesmo quando os testes falham.
 
+## Testes de produce e consume
+
+Usam só o broker plaintext (`127.0.0.1:19092`). Criam tópicos com `rpk` dentro do container e os removem ao final, mesmo quando um teste falha.
+
+```bash
+docker compose -f tests/fixtures/compose.yaml up -d --wait
+cargo test -p kafcli --test integration_produce_consume_cli -- --ignored --test-threads=1
+cargo test -p kafcli-core --test integration_produce_consume -- --ignored --test-threads=1
+docker compose -f tests/fixtures/compose.yaml down -v
+```
+
+- `integration_produce_consume_cli` executa o binário `kafcli` de verdade: ida e volta de `consume --output json` para `produce --input envelope --stdin`, valor não-JSON preservado como `value_base64`, fechamento precoce do pipe (`| head`) com saída 0 e stderr vazio, e neutralização de caracteres de controle na saída em tabela.
+- `integration_produce_consume` (núcleo) cobre a API de `kafcli-core`: offsets, `--count`, `--from`, truncamento, filtros, redação e o consumo sem commit.
+- `--test-threads=1` evita que os testes disputem o broker ao mesmo tempo; os testes não dependem da ordem entre si.
+
 ## Certificados
 
 `generate-certificates.sh` gera uma CA própria e os certificados de servidor e de cliente em `tests/fixtures/certificates/` (PEM). O diretório está no `.gitignore`: chaves geradas nunca são commitadas. Os certificados são descartáveis e valem para uso local e de CI apenas.

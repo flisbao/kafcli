@@ -3,7 +3,7 @@ use crate::connection::client_config_builder::{ConnectionSettings, build_client_
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
 use rdkafka::ClientConfig;
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
 use rdkafka::message::{BorrowedMessage, Headers, Message};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use serde::Serialize;
@@ -111,8 +111,8 @@ fn create_dump_consumer(base_config: ClientConfig, group_id: &str) -> CoreResult
     config.create().map_err(map_kafka_error)
 }
 
-pub(crate) fn fetch_partition_identifiers(
-    consumer: &BaseConsumer,
+pub(crate) fn fetch_partition_identifiers<C: ConsumerContext>(
+    consumer: &BaseConsumer<C>,
     topic: &str,
     timeout: Duration,
 ) -> CoreResult<Vec<i32>> {

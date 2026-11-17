@@ -1,3 +1,4 @@
+use crate::cli::consume_arguments::ConsumeArguments;
 use crate::cli::context_arguments::ContextCommand;
 use crate::cli::produce_arguments::ProduceArguments;
 use crate::output::output_format::OutputFormat;
@@ -55,4 +56,20 @@ pub enum TopLevelCommand {
 
 Payload text that contains a literal `{{` needs --no-template."#)]
     Produce(ProduceArguments),
+    /// Consume messages from a topic
+    #[command(after_help = r#"Examples:
+  kafcli consume --topic pedidos --count 10
+  kafcli consume --topic pedidos --partition 0 --from offset:100 --count 5
+  kafcli consume --topic a --output json | kafcli produce --topic b --stdin --input envelope
+  kafcli consume --topic pedidos [--partition 0] \
+    [--from earliest|latest|offset:N|time:2026-11-15T10:00:00-03:00] \
+    [--count 10] [--follow] [--format json --wire raw] \
+    [--max-bytes 2048] [--redact cpf,email] [--filter header:origem=kafcli]
+
+Notes:
+  --redact covers decoded JSON values only; keys and headers are not redacted.
+  With --redact, oversized or non-JSON values are withheld instead of shown.
+  --group reads with a consumer group and commits its offsets; without it nothing is committed.
+  Table output shows one line per message; use --output json for the envelopes."#)]
+    Consume(ConsumeArguments),
 }

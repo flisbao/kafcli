@@ -122,7 +122,7 @@ pub fn produce(
         (failed > 0).then(|| anyhow::anyhow!("produce finished with {failed} failed deliveries"));
     let text = render_output(&ProduceReportView(report), execution.global.output)?;
     Ok(RenderedOutput {
-        text,
+        text: Some(text),
         trailing_error,
     })
 }

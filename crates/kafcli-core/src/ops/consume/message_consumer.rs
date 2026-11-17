@@ -11,11 +11,12 @@ use crate::connection::client_config_builder::{ConnectionSettings, build_client_
 use crate::error::{CoreError, CoreResult};
 use crate::message::message_envelope::{EnvelopeValue, MessageEnvelope};
 use crate::message::record_header::RecordHeader;
+use crate::ops::consume::consume_client_context::{ConsumeClientContext, ConsumeConsumer};
 use crate::ops::consume::message_filter::{HeaderFilter, matches_header_filters, redact_fields};
 use crate::ops::consume::start_position::StartPosition;
 use crate::secret::resolver::SecretResolver;
 use rdkafka::ClientConfig;
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::consumer::Consumer;
 use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, Headers, Message};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
@@ -172,7 +173,7 @@ impl<'a> ConsumeRun<'a> {
     }
 
     /// Assigns the selected partitions at the start position and records each partition's target.
-    fn assign_partitions(&mut self, consumer: &BaseConsumer) -> CoreResult<()> {
+    fn assign_partitions(&mut self, consumer: &ConsumeConsumer) -> CoreResult<()> {
         let topic = self.options.topic.as_str();
         let timeout = self.options.timeout;
         let partitions = select_partitions(consumer, self.options)?;
@@ -215,7 +216,7 @@ impl<'a> ConsumeRun<'a> {
     }
 
     /// Polls until the stop condition holds or, without `--follow`, the timeout passes with no progress.
-    fn read_until_done(&mut self, consumer: &BaseConsumer, subscribed: bool) -> CoreResult<()> {
+    fn read_until_done(&mut self, consumer: &ConsumeConsumer, subscribed: bool) -> CoreResult<()> {
         loop {
             if self.count_reached() {
                 return Ok(());
@@ -273,7 +274,7 @@ impl<'a> ConsumeRun<'a> {
     }
 
     /// Gives a target to every partition of the current group assignment that does not have one yet.
-    fn register_assignment(&mut self, consumer: &BaseConsumer) -> CoreResult<()> {
+    fn register_assignment(&mut self, consumer: &ConsumeConsumer) -> CoreResult<()> {
         let assignment = consumer.assignment().map_err(map_kafka_error)?;
         if assignment.count() == 0 {
             return Ok(());
@@ -287,7 +288,7 @@ impl<'a> ConsumeRun<'a> {
         Ok(())
     }
 
-    fn register_partition(&mut self, consumer: &BaseConsumer, partition: i32) -> CoreResult<()> {
+    fn register_partition(&mut self, consumer: &ConsumeConsumer, partition: i32) -> CoreResult<()> {
         self.registered.insert(partition);
         let (low, high) = consumer
             .fetch_watermarks(&self.options.topic, partition, self.options.timeout)
@@ -300,7 +301,7 @@ impl<'a> ConsumeRun<'a> {
 
     fn handle_message(
         &mut self,
-        consumer: &BaseConsumer,
+        consumer: &ConsumeConsumer,
         message: &BorrowedMessage<'_>,
     ) -> CoreResult<Flow> {
         if !self.options.follow
@@ -327,7 +328,7 @@ impl<'a> ConsumeRun<'a> {
     /// Returns whether the message is below its partition's target. Reaching the target drops the partition.
     fn is_before_target(
         &mut self,
-        consumer: &BaseConsumer,
+        consumer: &ConsumeConsumer,
         partition: i32,
         offset: i64,
     ) -> CoreResult<bool> {
@@ -425,19 +426,24 @@ fn clamp_explicit_offset(requested: i64, low: i64, high: i64) -> (Offset, i64) {
     }
 }
 
-fn create_assign_consumer(base_config: ClientConfig, group_id: &str) -> CoreResult<BaseConsumer> {
+fn create_assign_consumer(
+    base_config: ClientConfig,
+    group_id: &str,
+) -> CoreResult<ConsumeConsumer> {
     let mut config = apply_common_settings(base_config, group_id);
     // Assignment never commits: the group id exists only because librdkafka requires one.
     config.set("enable.auto.commit", "false");
     config.set("enable.auto.offset.store", "false");
-    config.create().map_err(map_kafka_error)
+    config
+        .create_with_context(ConsumeClientContext)
+        .map_err(map_kafka_error)
 }
 
 fn create_subscribe_consumer(
     base_config: ClientConfig,
     group_id: &str,
     start: StartPosition,
-) -> CoreResult<BaseConsumer> {
+) -> CoreResult<ConsumeConsumer> {
     let mut config = apply_common_settings(base_config, group_id);
     config.set("enable.auto.commit", "true");
     let reset = match start {
@@ -445,7 +451,9 @@ fn create_subscribe_consumer(
         _ => "earliest",
     };
     config.set("auto.offset.reset", reset);
-    config.create().map_err(map_kafka_error)
+    config
+        .create_with_context(ConsumeClientContext)
+        .map_err(map_kafka_error)
 }
 
 fn apply_common_settings(base_config: ClientConfig, group_id: &str) -> ClientConfig {
@@ -459,7 +467,7 @@ fn apply_common_settings(base_config: ClientConfig, group_id: &str) -> ClientCon
 }
 
 /// Resolves the partitions to read: all of them, or the requested ones after checking they exist.
-fn select_partitions(consumer: &BaseConsumer, options: &ConsumeOptions) -> CoreResult<Vec<i32>> {
+fn select_partitions(consumer: &ConsumeConsumer, options: &ConsumeOptions) -> CoreResult<Vec<i32>> {
     let available = fetch_partition_identifiers(consumer, &options.topic, options.timeout)?;
     let Some(requested) = &options.partitions else {
         return Ok(available);
@@ -479,7 +487,7 @@ fn select_partitions(consumer: &BaseConsumer, options: &ConsumeOptions) -> CoreR
 
 /// Finds, for each partition, the first offset at or after `instant`. Partitions without one are absent.
 fn resolve_time_offsets(
-    consumer: &BaseConsumer,
+    consumer: &ConsumeConsumer,
     topic: &str,
     partitions: &[i32],
     instant: OffsetDateTime,

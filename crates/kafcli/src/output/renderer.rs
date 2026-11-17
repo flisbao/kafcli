@@ -20,14 +20,23 @@ struct JsonEnvelope<'a, T: Serialize> {
 /// A run can produce its full report and still fail (some deliveries were not acknowledged), so the
 /// report must reach stdout before the error reaches stderr.
 pub struct RenderedOutput {
-    pub text: String,
+    /// Text for stdout. `None` when the command already wrote its stdout while it ran.
+    pub text: Option<String>,
     pub trailing_error: Option<anyhow::Error>,
 }
 
 impl RenderedOutput {
     pub fn complete(text: String) -> Self {
         Self {
-            text,
+            text: Some(text),
+            trailing_error: None,
+        }
+    }
+
+    /// For a command that streamed its stdout itself and has nothing left to print.
+    pub fn streamed() -> Self {
+        Self {
+            text: None,
             trailing_error: None,
         }
     }
