@@ -4,6 +4,7 @@ pub mod avro_schema;
 pub mod avro_value_conversion;
 pub mod azure_avro_codec;
 pub mod azure_wire;
+pub mod codec_selection;
 pub mod confluent_codec;
 pub mod confluent_wire;
 pub mod json_schema_validator;
