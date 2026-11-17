@@ -165,13 +165,9 @@ impl RegistryHttpClient {
         let mut limited = Read::take(response, MAX_RESPONSE_BYTES + 1);
         let mut body = Vec::new();
         limited.read_to_end(&mut body).map_err(|error| {
-            let cause = if error.kind() == io::ErrorKind::TimedOut {
-                "timed out".to_string()
-            } else {
-                self.sanitize_text(&error.to_string())
-            };
             registry_error(format!(
-                "could not read the schema registry response: {cause}"
+                "could not read the schema registry response: {}",
+                self.describe_body_error(&error)
             ))
         })?;
         if body.len() as u64 > MAX_RESPONSE_BYTES {
@@ -198,6 +194,27 @@ impl RegistryHttpClient {
         let error = error.without_url();
         let mut description = kind.to_string();
         let mut cause = StdError::source(&error);
+        while let Some(current) = cause {
+            description.push_str(": ");
+            description.push_str(&current.to_string());
+            cause = current.source();
+        }
+        self.sanitize_text(&description)
+    }
+    /// Names a body-read timeout, or appends the cause chain of other read failures.
+    /// reqwest wraps body timeouts in an io::Error of kind `Other`, so the inner error is inspected.
+    fn describe_body_error(&self, error: &io::Error) -> String {
+        let inner = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<reqwest::Error>());
+        if error.kind() == io::ErrorKind::TimedOut || inner.is_some_and(|e| e.is_timeout()) {
+            return "timed out".to_string();
+        }
+        let mut description = error.to_string();
+        let mut cause = error
+            .get_ref()
+            .map(|inner| inner as &(dyn StdError + 'static))
+            .and_then(StdError::source);
         while let Some(current) = cause {
             description.push_str(": ");
             description.push_str(&current.to_string());
@@ -372,6 +389,46 @@ mod tests {
             error
                 .starts_with("schema registry error: request to schema registry failed: timed out"),
             "error: {error}"
+        );
+    }
+
+    #[test]
+    fn stalled_body_reports_read_timeout() {
+        use std::io::Write;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (release, hold) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\npartial",
+                );
+                let _ = hold.recv();
+            }
+        });
+        let client = RegistryHttpClient::new(
+            &url,
+            &RegistryAuthConfig::Anonymous,
+            None,
+            &FixedSecretResolver::returning("unused"),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+
+        let error = client
+            .send_request(Method::GET, "/x", None, None)
+            .err()
+            .unwrap()
+            .to_string();
+
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            error,
+            "schema registry error: could not read the schema registry response: timed out"
         );
     }
 
