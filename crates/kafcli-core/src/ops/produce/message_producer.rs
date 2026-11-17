@@ -31,6 +31,12 @@ const MAXIMUM_MESSAGES: u64 = 10_000_000;
 const QUEUE_BUFFERING_MAX_MESSAGES: &str = "100000";
 const QUEUE_FULL_POLL: Duration = Duration::from_millis(100);
 const MAXIMUM_REPORTED_DELIVERIES: usize = 1_000;
+/// Smallest message timeout given to librdkafka, so a short `--timeout` still allows retries.
+const MINIMUM_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
+/// librdkafka reads `message.timeout.ms` as a C `int`.
+const MAXIMUM_LIBRDKAFKA_TIMEOUT_MILLIS: u64 = i32::MAX as u64;
+/// Largest total of key, value and header bytes prepared for one run.
+pub const MAX_PREPARED_BYTES: usize = 1024 * 1024 * 1024;
 
 /// What to produce and how: target topic, templates, count, pacing and the timeout for each network step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +90,25 @@ pub fn prepare_messages(
     environment: &dyn EnvironmentLookup,
     now: OffsetDateTime,
 ) -> CoreResult<Vec<PreparedMessage>> {
+    prepare_messages_with_byte_limit(
+        inputs,
+        options,
+        encoder,
+        environment,
+        now,
+        MAX_PREPARED_BYTES,
+    )
+}
+
+/// `prepare_messages` with the byte cap passed in, so tests can use a small limit.
+fn prepare_messages_with_byte_limit(
+    inputs: &[ProduceInput],
+    options: &ProduceOptions,
+    encoder: &dyn ValueEncoder,
+    environment: &dyn EnvironmentLookup,
+    now: OffsetDateTime,
+    byte_limit: usize,
+) -> CoreResult<Vec<PreparedMessage>> {
     if inputs.is_empty() {
         return Ok(Vec::new());
     }
@@ -103,13 +128,41 @@ pub fn prepare_messages(
         state: TemplateState::new(),
     };
     let mut prepared = Vec::new();
+    let mut prepared_bytes: usize = 0;
     for _ in 0..options.count {
         for input in inputs {
-            prepared.push(preparer.prepare(input)?);
+            let message = preparer.prepare(input)?;
+            prepared_bytes = prepared_bytes.saturating_add(prepared_message_bytes(&message));
+            if prepared_bytes > byte_limit {
+                return Err(CoreError::InvalidInput(
+                    "prepared messages exceed 1 GiB".to_string(),
+                ));
+            }
+            prepared.push(message);
             preparer.state.advance();
         }
     }
     Ok(prepared)
+}
+
+/// Bytes a prepared message holds: key, value, and header names and values.
+fn prepared_message_bytes(message: &PreparedMessage) -> usize {
+    let header_bytes: usize = message
+        .headers
+        .iter()
+        .map(|header| {
+            header
+                .name
+                .len()
+                .saturating_add(header.value.as_ref().map_or(0, Vec::len))
+        })
+        .fold(0, usize::saturating_add);
+    message
+        .key
+        .as_ref()
+        .map_or(0, Vec::len)
+        .saturating_add(message.value.as_ref().map_or(0, Vec::len))
+        .saturating_add(header_bytes)
 }
 
 /// Sends the prepared messages to `options.topic` and waits for the broker's acknowledgements.
@@ -129,19 +182,33 @@ pub fn produce_messages(
 
     let (sender, receiver) = mpsc::channel();
     let producer: BaseProducer<ProduceDeliveryContext> =
-        build_producer_config(&base_config, tuning.compression_disabled)
+        build_producer_config(&base_config, tuning.compression_disabled, options.timeout)
             .create_with_context(ProduceDeliveryContext { deliveries: sender })
             .map_err(map_kafka_error)?;
 
     let mut tally = DeliveryTally::default();
+    let mut progress = ProgressClock::new(Instant::now(), options.timeout);
     let mut limiter = options.rate_per_second.map(RateLimiter::new);
     for message in &messages {
         if let Some(limiter) = limiter.as_mut() {
             wait_for_slot(&producer, limiter);
         }
-        enqueue_message(&producer, &options.topic, message, &mut tally);
+        let queued = enqueue_message(
+            &producer,
+            &options.topic,
+            message,
+            &mut tally,
+            &receiver,
+            &mut progress,
+        );
+        if !queued {
+            // Remaining messages are left unsent and count as failed.
+            break;
+        }
         producer.poll(Duration::ZERO);
-        tally.collect(&receiver);
+        if tally.collect(&receiver) > 0 {
+            progress.mark(Instant::now());
+        }
     }
 
     if let Err(error) = producer.flush(options.timeout) {
@@ -325,13 +392,17 @@ struct DeliveryTally {
 }
 
 impl DeliveryTally {
-    fn collect(&mut self, receiver: &Receiver<Result<DeliveryReport, String>>) {
+    /// Records every outcome waiting in the channel and returns how many arrived.
+    fn collect(&mut self, receiver: &Receiver<Result<DeliveryReport, String>>) -> usize {
+        let mut collected = 0;
         for outcome in receiver.try_iter() {
+            collected += 1;
             match outcome {
                 Ok(report) => self.record_delivery(report),
                 Err(message) => self.note_error(&message),
             }
         }
+        collected
     }
 
     fn record_delivery(&mut self, report: DeliveryReport) {
@@ -383,17 +454,70 @@ fn ensure_topic_exists(
     }
 }
 
-fn build_producer_config(base_config: &ClientConfig, compression_disabled: bool) -> ClientConfig {
+fn build_producer_config(
+    base_config: &ClientConfig,
+    compression_disabled: bool,
+    timeout: Duration,
+) -> ClientConfig {
     let mut config = base_config.clone();
     // Missing topics must never be created by a producer.
     config.set("allow.auto.create.topics", "false");
     config.set("enable.idempotence", "true");
     config.set("acks", "all");
     config.set("queue.buffering.max.messages", QUEUE_BUFFERING_MAX_MESSAGES);
+    config.set(
+        "message.timeout.ms",
+        message_timeout_millis(timeout).to_string(),
+    );
     if compression_disabled {
         config.set("compression.type", "none");
     }
     config
+}
+
+/// Delivery timeout for librdkafka: the run timeout, but never below the floor and never above `i32::MAX` ms.
+fn message_timeout_millis(timeout: Duration) -> u64 {
+    let millis =
+        u64::try_from(timeout.max(MINIMUM_MESSAGE_TIMEOUT).as_millis()).unwrap_or(u64::MAX);
+    millis.min(MAXIMUM_LIBRDKAFKA_TIMEOUT_MILLIS)
+}
+
+/// Tracks the last moment the run made progress: a send was queued or a delivery arrived.
+struct ProgressClock {
+    last_progress: Instant,
+    timeout: Duration,
+}
+
+impl ProgressClock {
+    fn new(now: Instant, timeout: Duration) -> Self {
+        Self {
+            last_progress: now,
+            timeout,
+        }
+    }
+
+    fn mark(&mut self, now: Instant) {
+        self.last_progress = now;
+    }
+
+    /// Time without progress when it exceeds the timeout, otherwise `None`.
+    fn stalled_for(&self, now: Instant) -> Option<Duration> {
+        stalled_duration(self.last_progress, now, self.timeout)
+    }
+}
+
+/// Returns how long the run has gone without progress, but only when that exceeds `timeout`.
+fn stalled_duration(last_progress: Instant, now: Instant, timeout: Duration) -> Option<Duration> {
+    let idle = now.saturating_duration_since(last_progress);
+    (idle > timeout).then_some(idle)
+}
+
+/// Explains a stall in whole seconds for the report.
+fn stall_message(stalled_for: Duration) -> String {
+    format!(
+        "queue stayed full for {} seconds without progress",
+        stalled_for.as_secs()
+    )
 }
 
 /// Waits for the limiter's next slot by polling the producer, so delivery reports keep flowing.
@@ -410,25 +534,40 @@ fn wait_for_slot(producer: &BaseProducer<ProduceDeliveryContext>, limiter: &mut 
 }
 
 /// Queues one message. A full local queue is retried with the same record after polling.
+///
+/// Returns `false` when the queue stayed full for longer than the run timeout without any progress;
+/// the caller then stops enqueuing.
 fn enqueue_message(
     producer: &BaseProducer<ProduceDeliveryContext>,
     topic: &str,
     message: &PreparedMessage,
     tally: &mut DeliveryTally,
-) {
+    receiver: &Receiver<Result<DeliveryReport, String>>,
+    progress: &mut ProgressClock,
+) -> bool {
     let mut record = build_record(topic, message);
     loop {
         match producer.send(record) {
-            Ok(()) => return,
+            Ok(()) => {
+                progress.mark(Instant::now());
+                return true;
+            }
             Err((error, returned))
                 if error.rdkafka_error_code() == Some(RDKafkaErrorCode::QueueFull) =>
             {
+                if let Some(stalled_for) = progress.stalled_for(Instant::now()) {
+                    tally.note_error(&stall_message(stalled_for));
+                    return false;
+                }
                 producer.poll(QUEUE_FULL_POLL);
+                if tally.collect(receiver) > 0 {
+                    progress.mark(Instant::now());
+                }
                 record = returned;
             }
             Err((error, _returned)) => {
                 tally.note_error(&error.to_string());
-                return;
+                return true;
             }
         }
     }
@@ -673,6 +812,76 @@ mod tests {
             values(&messages),
             vec![Some("{\"id\":\"{{seq}}\"}".to_string())]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn message_timeout_has_floor_and_follows_run_timeout() {
+        let short = build_producer_config(&ClientConfig::new(), false, Duration::from_secs(2));
+        let long = build_producer_config(&ClientConfig::new(), false, Duration::from_secs(30));
+
+        assert_eq!(short.get("message.timeout.ms"), Some("10000"));
+        assert_eq!(long.get("message.timeout.ms"), Some("30000"));
+    }
+
+    #[test]
+    fn message_timeout_is_capped_at_librdkafka_int_range() {
+        assert_eq!(
+            message_timeout_millis(Duration::from_secs(u64::MAX / 2)),
+            MAXIMUM_LIBRDKAFKA_TIMEOUT_MILLIS
+        );
+    }
+
+    #[test]
+    fn stall_guard_fires_only_after_timeout() {
+        let start = Instant::now();
+        let timeout = Duration::from_secs(2);
+
+        assert_eq!(stalled_duration(start, start + timeout, timeout), None);
+        let stalled = stalled_duration(start, start + timeout + Duration::from_millis(1), timeout);
+        assert_eq!(stalled.map(|duration| duration.as_secs()), Some(2));
+    }
+
+    #[test]
+    fn progress_resets_the_stall_clock() {
+        let start = Instant::now();
+        let mut clock = ProgressClock::new(start, Duration::from_secs(2));
+
+        clock.mark(start + Duration::from_secs(5));
+
+        assert_eq!(clock.stalled_for(start + Duration::from_secs(6)), None);
+        assert!(clock.stalled_for(start + Duration::from_secs(8)).is_some());
+    }
+
+    #[test]
+    fn stall_message_names_whole_seconds() {
+        assert_eq!(
+            stall_message(Duration::from_millis(3_900)),
+            "queue stayed full for 3 seconds without progress"
+        );
+    }
+
+    #[test]
+    fn prepared_bytes_limit_is_enforced() -> CoreResult<()> {
+        let inputs = vec![payload(json!({"n": 1}), 1)];
+        // Each message is `{"n":1}`, 7 bytes, so two messages need 14 bytes.
+        let prepare_with_limit = |limit: usize| {
+            prepare_messages_with_byte_limit(
+                &inputs,
+                &options(2),
+                &RawJsonCodec,
+                &ProcessEnvironment,
+                OffsetDateTime::UNIX_EPOCH,
+                limit,
+            )
+        };
+
+        assert_eq!(prepare_with_limit(14)?.len(), 2);
+        let message = match prepare_with_limit(13) {
+            Err(error) => error.to_string(),
+            Ok(messages) => format!("no error, {} messages", messages.len()),
+        };
+        assert_eq!(message, "invalid input: prepared messages exceed 1 GiB");
         Ok(())
     }
 
