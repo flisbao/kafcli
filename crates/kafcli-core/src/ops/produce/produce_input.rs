@@ -117,6 +117,11 @@ fn parse_envelope_inputs(text: &str) -> CoreResult<Vec<ProduceInput>> {
                 "envelope line {line_number}: value was truncated by --max-bytes; consume again with --max-bytes 0"
             )));
         }
+        if envelope.decode_error.is_some() && envelope.value_base64.is_none() {
+            return Err(CoreError::InvalidInput(format!(
+                "envelope line {line_number}: value was withheld by --redact; consume again without --redact"
+            )));
+        }
         inputs.push(ProduceInput::Envelope {
             envelope,
             line: line_number,
@@ -144,6 +149,18 @@ mod tests {
             InputMode::Envelope,
             &mut Cursor::new(Vec::new()),
         )
+    }
+
+    #[test]
+    fn withheld_envelope_value_is_rejected_with_the_line_number() {
+        let text = r#"{"kafcli_envelope":1,"topic":"t","partition":0,"offset":1,"timestamp":null,"key":null,"value":null,"decode_error":"value withheld: --redact cannot be applied to a truncated or undecodable value","headers":[]}"#;
+
+        let message = error_message(read_envelope(text));
+
+        assert_eq!(
+            message,
+            "invalid input: envelope line 1: value was withheld by --redact; consume again without --redact"
+        );
     }
 
     fn error_message(result: CoreResult<Vec<ProduceInput>>) -> String {

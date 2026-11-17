@@ -61,6 +61,9 @@ pub enum EnvelopeValue {
     Truncated { prefix: Vec<u8> },
     /// The record has no value (tombstone).
     Absent,
+    /// The value was not kept because redaction cannot reach it. Written as `value: null` with
+    /// `decode_error` set to `reason`, and no `value_base64`.
+    Withheld { reason: String },
 }
 
 impl MessageEnvelope {
@@ -127,6 +130,7 @@ impl MessageEnvelope {
                 self.value_base64 = Some(encode_base64(&prefix));
                 self.value_truncated = true;
             }
+            EnvelopeValue::Withheld { reason } => self.decode_error = Some(reason),
             EnvelopeValue::Absent => {}
         }
     }
@@ -496,6 +500,31 @@ mod tests {
         assert!(json.contains("\"key\":null"), "{json}");
         assert!(json.contains("\"value\":null"), "{json}");
         assert!(json.contains("\"headers\":[]"), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn withheld_value_serializes_as_null_with_reason_and_no_base64() -> CoreResult<()> {
+        let envelope = MessageEnvelope::from_record(
+            "pedidos",
+            0,
+            8,
+            None,
+            None,
+            EnvelopeValue::Withheld {
+                reason: "value withheld: test reason".to_string(),
+            },
+            &[],
+        );
+        let json = json_of(&envelope)?;
+
+        assert!(json.contains("\"value\":null"), "{json}");
+        assert!(!json.contains("value_base64"), "{json}");
+        assert!(!json.contains("value_truncated"), "{json}");
+        assert!(
+            json.contains("\"decode_error\":\"value withheld: test reason\""),
+            "{json}"
+        );
         Ok(())
     }
 

@@ -27,6 +27,8 @@ use time::OffsetDateTime;
 /// Longest single `poll`, so the stop conditions are checked at least this often.
 const POLL_SLICE: Duration = Duration::from_millis(500);
 const CONSUME_GROUP_PREFIX: &str = "kafcli-consume-";
+const WITHHELD_REASON: &str =
+    "value withheld: --redact cannot be applied to a truncated or undecodable value";
 
 /// What to read and how. `max_bytes = 0` means no limit on the value size kept or decoded.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +40,9 @@ pub struct ConsumeOptions {
     pub follow: bool,
     pub group: Option<String>,
     pub max_bytes: usize,
+    /// Object keys whose values are replaced by `"[redacted]"` in decoded JSON values, at any depth.
+    /// Keys and headers are not redacted. A truncated or undecodable value cannot be redacted, so with
+    /// any redact name it is withheld instead of emitted.
     pub redact: Vec<String>,
     pub filters: Vec<HeaderFilter>,
     pub timeout: Duration,
@@ -190,7 +195,7 @@ impl<'a> ConsumeRun<'a> {
             let (start, next) = match self.options.start {
                 StartPosition::Earliest => (Offset::Beginning, low),
                 StartPosition::Latest => (Offset::End, high),
-                StartPosition::Offset(offset) => (Offset::Offset(offset), offset),
+                StartPosition::Offset(offset) => clamp_explicit_offset(offset, low, high),
                 StartPosition::Time(_) => match time_offsets.get(&partition) {
                     Some(&offset) => (Offset::Offset(offset), offset),
                     None => (Offset::End, high),
@@ -361,25 +366,62 @@ impl<'a> ConsumeRun<'a> {
     }
 
     fn build_value(&self, payload: Option<&[u8]>, headers: &[RecordHeader]) -> EnvelopeValue {
-        let Some(bytes) = payload else {
-            return EnvelopeValue::Absent;
+        build_envelope_value(
+            payload,
+            headers,
+            self.decoder,
+            self.options.max_bytes,
+            &self.options.redact,
+        )
+    }
+}
+
+/// Chooses what the envelope keeps of a value. With redaction on, a truncated or undecodable value
+/// is withheld, because redaction cannot reach its content.
+fn build_envelope_value(
+    payload: Option<&[u8]>,
+    headers: &[RecordHeader],
+    decoder: &dyn ValueDecoder,
+    max_bytes: usize,
+    redact: &[String],
+) -> EnvelopeValue {
+    let Some(bytes) = payload else {
+        return EnvelopeValue::Absent;
+    };
+    let redacting = !redact.is_empty();
+    let withheld = || EnvelopeValue::Withheld {
+        reason: WITHHELD_REASON.to_string(),
+    };
+    if max_bytes > 0 && bytes.len() > max_bytes {
+        if redacting {
+            return withheld();
+        }
+        return EnvelopeValue::Truncated {
+            prefix: bytes.iter().take(max_bytes).copied().collect(),
         };
-        let maximum = self.options.max_bytes;
-        if maximum > 0 && bytes.len() > maximum {
-            return EnvelopeValue::Truncated {
-                prefix: bytes.iter().take(maximum).copied().collect(),
-            };
+    }
+    match decoder.decode_value(bytes, headers) {
+        Ok(mut value) => {
+            redact_fields(&mut value, redact);
+            EnvelopeValue::Decoded(value)
         }
-        match self.decoder.decode_value(bytes, headers) {
-            Ok(mut value) => {
-                redact_fields(&mut value, &self.options.redact);
-                EnvelopeValue::Decoded(value)
-            }
-            Err(error) => EnvelopeValue::Undecodable {
-                bytes: bytes.to_vec(),
-                error,
-            },
-        }
+        Err(_) if redacting => withheld(),
+        Err(error) => EnvelopeValue::Undecodable {
+            bytes: bytes.to_vec(),
+            error,
+        },
+    }
+}
+
+/// Clamps an explicit `--from offset:N` to the partition's watermarks. Returns the offset to assign
+/// and the position the partition reads from.
+fn clamp_explicit_offset(requested: i64, low: i64, high: i64) -> (Offset, i64) {
+    if requested < low {
+        (Offset::Offset(low), low)
+    } else if requested > high {
+        (Offset::End, high)
+    } else {
+        (Offset::Offset(requested), requested)
     }
 }
 
@@ -495,6 +537,7 @@ fn map_kafka_error(error: KafkaError) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::raw_json_codec::RawJsonCodec;
 
     fn options(
         start: StartPosition,
@@ -552,6 +595,97 @@ mod tests {
     #[test]
     fn group_free_options_are_accepted() {
         assert!(validate_options(&options(StartPosition::Offset(3), None, Some(vec![0]))).is_ok());
+    }
+
+    #[test]
+    fn explicit_offset_below_low_watermark_starts_at_low() {
+        assert_eq!(clamp_explicit_offset(2, 5, 9), (Offset::Offset(5), 5));
+    }
+
+    #[test]
+    fn explicit_offset_inside_watermarks_is_kept() {
+        assert_eq!(clamp_explicit_offset(7, 5, 9), (Offset::Offset(7), 7));
+    }
+
+    #[test]
+    fn explicit_offset_equal_high_watermark_is_kept() {
+        assert_eq!(clamp_explicit_offset(9, 5, 9), (Offset::Offset(9), 9));
+    }
+
+    #[test]
+    fn explicit_offset_above_high_watermark_starts_at_end() {
+        assert_eq!(clamp_explicit_offset(12, 5, 9), (Offset::End, 9));
+    }
+
+    #[test]
+    fn undecodable_value_is_withheld_when_redacting() {
+        let value = build_envelope_value(
+            Some(b"not json"),
+            &[],
+            &RawJsonCodec,
+            0,
+            &["pw".to_string()],
+        );
+
+        assert_eq!(
+            value,
+            EnvelopeValue::Withheld {
+                reason: WITHHELD_REASON.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn undecodable_value_is_kept_as_bytes_without_redaction() {
+        let value = build_envelope_value(Some(b"not json"), &[], &RawJsonCodec, 0, &[]);
+
+        assert!(matches!(value, EnvelopeValue::Undecodable { .. }));
+    }
+
+    #[test]
+    fn truncated_value_is_withheld_when_redacting() {
+        let value = build_envelope_value(
+            Some(br#"{"a":1}"#),
+            &[],
+            &RawJsonCodec,
+            4,
+            &["pw".to_string()],
+        );
+
+        assert_eq!(
+            value,
+            EnvelopeValue::Withheld {
+                reason: WITHHELD_REASON.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn truncated_value_is_kept_as_prefix_without_redaction() {
+        let value = build_envelope_value(Some(br#"{"a":1}"#), &[], &RawJsonCodec, 4, &[]);
+
+        assert_eq!(
+            value,
+            EnvelopeValue::Truncated {
+                prefix: br#"{"a""#.to_vec()
+            }
+        );
+    }
+
+    #[test]
+    fn decoded_value_is_redacted_when_redacting() {
+        let value = build_envelope_value(
+            Some(br#"{"pw":"x"}"#),
+            &[],
+            &RawJsonCodec,
+            0,
+            &["pw".to_string()],
+        );
+
+        assert_eq!(
+            value,
+            EnvelopeValue::Decoded(serde_json::json!({"pw": "[redacted]"}))
+        );
     }
 
     #[test]
