@@ -26,7 +26,34 @@ use std::io::{self, ErrorKind as IoErrorKind, Write};
 use std::process::ExitCode;
 use std::time::Duration;
 
+/// Stack size for the thread that runs kafcli. apache-avro lets one datum nest up to 256 decoder
+/// levels (kafcli's 64 JSON levels need about three apache levels each), which needs about 8 to 12 MiB
+/// in a debug build. The main thread has 8 MiB on Linux and 1 MiB on Windows, so the work runs on a
+/// thread with this much stack instead of on the main thread.
+const CLI_THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    let worker = std::thread::Builder::new()
+        .name("kafcli-main".into())
+        .stack_size(CLI_THREAD_STACK_BYTES)
+        .spawn(run_cli);
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            write_error_line(&format!("error: could not start kafcli thread: {error}"));
+            return ExitCode::from(KafcliExitCode::Failure as u8);
+        }
+    };
+    match worker.join() {
+        Ok(exit_code) => exit_code,
+        Err(_) => {
+            write_error_line("error: kafcli thread panicked");
+            ExitCode::from(KafcliExitCode::Failure as u8)
+        }
+    }
+}
+
+fn run_cli() -> ExitCode {
     let arguments = match CommandLineArguments::try_parse() {
         Ok(arguments) => arguments,
         Err(usage_error) => return report_usage_error(&usage_error),
