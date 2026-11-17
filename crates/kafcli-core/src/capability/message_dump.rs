@@ -111,7 +111,7 @@ fn create_dump_consumer(base_config: ClientConfig, group_id: &str) -> CoreResult
     config.create().map_err(map_kafka_error)
 }
 
-fn fetch_partition_identifiers(
+pub(crate) fn fetch_partition_identifiers(
     consumer: &BaseConsumer,
     topic: &str,
     timeout: Duration,
