@@ -261,6 +261,29 @@ fn produce_values(directory: &Path, topic: &str, arguments: &[&str], values: &[V
         .success();
 }
 
+/// Key and custom header that every replay test sends, so a replay that drops them fails.
+const REPLAY_KEY: &str = "order-it-7";
+const REPLAY_HEADER: &str = "trace-id=trace-it-7";
+
+/// Produces one message that carries `REPLAY_KEY` and `REPLAY_HEADER`.
+fn produce_keyed_message(directory: &Path, topic: &str, arguments: &[&str], value: &Value) {
+    build_kafcli_command(directory)
+        .args(["produce", "--topic", topic])
+        .args(arguments)
+        .args(["--key", REPLAY_KEY, "--header", REPLAY_HEADER])
+        .args(["--value", &value.to_string()])
+        .assert()
+        .success();
+}
+
+fn assert_key_and_trace_header(envelope: &Value) {
+    assert_eq!(envelope["key"], REPLAY_KEY);
+    assert_eq!(
+        header_values(envelope, "trace-id"),
+        vec!["trace-it-7".to_string()]
+    );
+}
+
 fn header_values(envelope: &Value, name: &str) -> Vec<String> {
     envelope["headers"]
         .as_array()
@@ -474,7 +497,7 @@ fn azure_envelope_replay_keeps_single_content_type() {
     let _source = TopicGuard::create(&source);
     let _target = TopicGuard::create(&target);
     add_azure_context(directory.path(), &registry.url());
-    produce_values(
+    produce_keyed_message(
         directory.path(),
         &source,
         &[
@@ -485,7 +508,7 @@ fn azure_envelope_replay_keeps_single_content_type() {
             "--schema-subject",
             AZURE_SUBJECT,
         ],
-        &[json!({"id": 31})],
+        &json!({"id": 31}),
     );
     let envelopes = consume_json(
         directory.path(),
@@ -518,10 +541,64 @@ fn azure_envelope_replay_keeps_single_content_type() {
         &["--format", "avro", "--wire", "azure", "--count", "1"],
     );
     assert_eq!(replayed[0]["value"], json!({"id": 31}));
+    assert_key_and_trace_header(&replayed[0]);
     assert_eq!(
         header_values(&replayed[0], "content-type"),
         vec![format!("avro/binary+{AZURE_SCHEMA_ID}")]
     );
+}
+
+#[test]
+#[ignore]
+fn confluent_avro_envelope_replay_keeps_key_and_headers() {
+    let directory = tempfile::tempdir().unwrap();
+    let subject = unique_name("pedidos-replay");
+    let source = unique_name("it-confluent-replay-source");
+    let target = unique_name("it-confluent-replay-target");
+    register_confluent_schema(&subject, SchemaKind::Avro, AVRO_RECORD);
+    let _source = TopicGuard::create(&source);
+    let _target = TopicGuard::create(&target);
+    add_confluent_context(directory.path());
+    let confluent_arguments = [
+        "--format",
+        "avro",
+        "--wire",
+        "confluent",
+        "--schema-subject",
+        &subject,
+    ];
+    produce_keyed_message(
+        directory.path(),
+        &source,
+        &confluent_arguments,
+        &json!({"id": 41}),
+    );
+    let envelopes = consume_json(
+        directory.path(),
+        &source,
+        &["--format", "avro", "--wire", "confluent", "--count", "1"],
+    );
+    assert_key_and_trace_header(&envelopes[0]);
+    let replay: String = envelopes
+        .iter()
+        .map(|envelope| format!("{envelope}\n"))
+        .collect();
+
+    build_kafcli_command(directory.path())
+        .args(["produce", "--topic", &target])
+        .args(confluent_arguments)
+        .args(["--input", "envelope", "--stdin"])
+        .write_stdin(replay.into_bytes())
+        .assert()
+        .success();
+
+    let replayed = consume_json(
+        directory.path(),
+        &target,
+        &["--format", "avro", "--wire", "confluent", "--count", "1"],
+    );
+    assert_eq!(replayed[0]["value"], json!({"id": 41}));
+    assert_key_and_trace_header(&replayed[0]);
 }
 
 #[test]
