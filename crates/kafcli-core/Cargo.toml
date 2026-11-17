@@ -13,6 +13,7 @@ keyring = ["dep:keyring"]
 test-support = []
 
 [dependencies]
+base64.workspace = true
 dirs.workspace = true
 figment.workspace = true
 rdkafka.workspace = true

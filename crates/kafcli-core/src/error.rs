@@ -22,6 +22,8 @@ pub enum CoreError {
     Kafka(String),
     #[error("topic '{0}' not found in cluster metadata")]
     TopicNotFound(String),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
     #[error("operation aborted: {0}")]
     OperationAborted(String),
     #[error("i/o error: {0}")]
