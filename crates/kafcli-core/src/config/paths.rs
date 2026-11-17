@@ -53,7 +53,9 @@ mod tests {
 
     #[test]
     fn state_directory_ends_with_kafcli() {
-        let path = default_state_directory().unwrap();
+        // Uses the pure resolver with no override, so the result does not depend on KAFCLI_STATE_DIR.
+        let path =
+            resolve_state_directory(None, dirs::state_dir().or_else(dirs::data_local_dir)).unwrap();
         assert!(path.ends_with("kafcli"));
     }
 
