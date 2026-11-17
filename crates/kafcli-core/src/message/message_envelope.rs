@@ -1,15 +1,12 @@
 use super::binary_text::{decode_base64, encode_base64};
 use super::record_header::RecordHeader;
+use super::timestamp_text::format_rfc3339_millis;
 use crate::error::{CoreError, CoreResult};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use time::format_description;
 
 /// The only envelope version this build reads and writes.
 const SUPPORTED_ENVELOPE_VERSION: u32 = 1;
-
-const TIMESTAMP_FORMAT: &str =
-    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z";
 
 /// One NDJSON line: a single message with its position, key, value and headers.
 ///
@@ -222,8 +219,7 @@ fn split_text_or_base64(bytes: &[u8]) -> (Option<String>, Option<String>) {
 fn format_timestamp_millis(millis: i64) -> Option<String> {
     let nanos = i128::from(millis) * 1_000_000;
     let instant = OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
-    let description = format_description::parse_borrowed::<2>(TIMESTAMP_FORMAT).ok()?;
-    instant.format(&description).ok()
+    format_rfc3339_millis(instant)
 }
 
 fn is_false(value: &bool) -> bool {

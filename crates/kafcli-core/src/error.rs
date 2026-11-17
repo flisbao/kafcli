@@ -24,6 +24,8 @@ pub enum CoreError {
     TopicNotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("template error: {0}")]
+    Template(String),
     #[error("operation aborted: {0}")]
     OperationAborted(String),
     #[error("i/o error: {0}")]

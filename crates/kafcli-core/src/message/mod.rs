@@ -3,3 +3,4 @@
 pub mod binary_text;
 pub mod message_envelope;
 pub mod record_header;
+pub mod timestamp_text;
