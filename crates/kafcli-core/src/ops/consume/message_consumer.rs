@@ -1,7 +1,8 @@
 //! Reads messages from a topic and passes each one to an `EnvelopeSink`.
 //!
 //! Without a group the consumer only assigns partitions and never commits. With a group it
-//! subscribes and lets the group commit offsets. Without `--follow` each partition is read up to
+//! subscribes, stores each offset once the message was delivered or filtered out, and lets the
+//! group commit the stored offsets. Without `--follow` each partition is read up to
 //! the high watermark observed when the run started.
 
 use crate::capability::message_dump::fetch_partition_identifiers;
@@ -307,22 +308,40 @@ impl<'a> ConsumeRun<'a> {
         if !self.options.follow
             && !self.is_before_target(consumer, message.partition(), message.offset())?
         {
+            // Past the target: this run does not process the message, so the group must not store it.
             return Ok(Flow::Continue);
         }
         let headers = read_headers(message);
         if !matches_header_filters(&self.options.filters, &headers) {
             self.skipped_by_filter += 1;
+            self.store_group_position(consumer, message)?;
             return Ok(Flow::Continue);
         }
         let envelope = self.build_envelope(message, &headers);
         match self.sink.accept_envelope(&envelope) {
             Ok(()) => {
                 self.delivered += 1;
+                self.store_group_position(consumer, message)?;
                 Ok(Flow::Continue)
             }
             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(Flow::Stop),
             Err(error) => Err(CoreError::Io(error)),
         }
+    }
+
+    /// Stores the offset of a message this run has processed, so the group commits up to it.
+    /// Assignment runs have no group to commit for and never store.
+    fn store_group_position(
+        &self,
+        consumer: &ConsumeConsumer,
+        message: &BorrowedMessage<'_>,
+    ) -> CoreResult<()> {
+        if self.options.group.is_none() {
+            return Ok(());
+        }
+        consumer
+            .store_offset_from_message(message)
+            .map_err(map_kafka_error)
     }
 
     /// Returns whether the message is below its partition's target. Reaching the target drops the partition.
@@ -447,16 +466,26 @@ fn create_subscribe_consumer(
     group_id: &str,
     start: StartPosition,
 ) -> CoreResult<ConsumeConsumer> {
+    build_subscribe_config(base_config, group_id, start)
+        .create_with_context(ConsumeClientContext)
+        .map_err(map_kafka_error)
+}
+
+fn build_subscribe_config(
+    base_config: ClientConfig,
+    group_id: &str,
+    start: StartPosition,
+) -> ClientConfig {
     let mut config = apply_common_settings(base_config, group_id);
     config.set("enable.auto.commit", "true");
+    // Offsets are stored by hand after a message is delivered, so auto commit never passes an unread one.
+    config.set("enable.auto.offset.store", "false");
     let reset = match start {
         StartPosition::Latest => "latest",
         _ => "earliest",
     };
     config.set("auto.offset.reset", reset);
     config
-        .create_with_context(ConsumeClientContext)
-        .map_err(map_kafka_error)
 }
 
 fn apply_common_settings(base_config: ClientConfig, group_id: &str) -> ClientConfig {
@@ -697,6 +726,15 @@ mod tests {
             value,
             EnvelopeValue::Decoded(serde_json::json!({"pw": "[redacted]"}))
         );
+    }
+
+    #[test]
+    fn group_run_commits_only_offsets_stored_by_hand() {
+        let config = build_subscribe_config(ClientConfig::new(), "g", StartPosition::Earliest);
+
+        assert_eq!(config.get("enable.auto.commit"), Some("true"));
+        assert_eq!(config.get("enable.auto.offset.store"), Some("false"));
+        assert_eq!(config.get("allow.auto.create.topics"), Some("false"));
     }
 
     #[test]

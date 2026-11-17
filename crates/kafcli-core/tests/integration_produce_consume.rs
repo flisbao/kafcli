@@ -527,6 +527,48 @@ fn group_mode_reads_until_watermark_and_stops() {
 
 #[test]
 #[ignore = "requires docker compose fixtures"]
+fn group_second_run_delivers_what_the_first_left() {
+    let topic = unique_name("kafcli-consume-resume");
+    let _guard = TopicGuard::create(&topic);
+    produce_prepared(
+        &topic,
+        vec![
+            prepared(0, &json_value(0)),
+            prepared(0, &json_value(1)),
+            prepared(0, &json_value(2)),
+            prepared(1, &json_value(3)),
+            prepared(1, &json_value(4)),
+            prepared(1, &json_value(5)),
+        ],
+    )
+    .unwrap();
+    let group = unique_name("kafcli-consume-resume-group");
+    let mut first = consume_options(&topic, StartPosition::Earliest);
+    first.group = Some(group.clone());
+    first.count = Some(4);
+    let (first_summary, first_envelopes) = consume_into_sink(&first).unwrap();
+
+    let mut second = consume_options(&topic, StartPosition::Earliest);
+    second.group = Some(group.clone());
+    let (second_summary, second_envelopes) = consume_into_sink(&second).unwrap();
+
+    assert_eq!(first_summary.delivered, 4);
+    assert_eq!(second_summary.delivered, 2);
+    // Together the two runs deliver each of the six messages exactly once.
+    let mut positions: Vec<(i32, i64)> = first_envelopes
+        .iter()
+        .chain(second_envelopes.iter())
+        .map(|envelope| (envelope.partition.unwrap(), envelope.offset.unwrap()))
+        .collect();
+    positions.sort_unstable();
+    assert_eq!(
+        positions,
+        vec![(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+    );
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
 fn header_filter_skips_non_matching_messages() {
     let topic = unique_name("kafcli-consume-filter");
     let _guard = TopicGuard::create(&topic);
