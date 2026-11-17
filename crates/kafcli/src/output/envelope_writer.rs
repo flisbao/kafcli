@@ -169,6 +169,19 @@ mod tests {
     }
 
     #[test]
+    fn table_shows_json_null_value_as_null_not_tombstone() {
+        let line = render_table_line(&envelope_with(
+            Some(b"k"),
+            EnvelopeValue::JsonNull {
+                bytes: b"null".to_vec(),
+            },
+        ));
+
+        assert!(line.ends_with("  k  null"), "{line}");
+        assert!(!line.ends_with("<null>"), "{line}");
+    }
+
+    #[test]
     fn table_marks_withheld_value() {
         let line = render_table_line(&envelope_with(
             None,

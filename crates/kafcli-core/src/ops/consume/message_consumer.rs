@@ -402,6 +402,9 @@ fn build_envelope_value(
         };
     }
     match decoder.decode_value(bytes, headers) {
+        Ok(serde_json::Value::Null) => EnvelopeValue::JsonNull {
+            bytes: bytes.to_vec(),
+        },
         Ok(mut value) => {
             redact_fields(&mut value, redact);
             EnvelopeValue::Decoded(value)
@@ -693,6 +696,18 @@ mod tests {
         assert_eq!(
             value,
             EnvelopeValue::Decoded(serde_json::json!({"pw": "[redacted]"}))
+        );
+    }
+
+    #[test]
+    fn json_null_payload_is_kept_as_its_bytes() {
+        let value = build_envelope_value(Some(b"null"), &[], &RawJsonCodec, 0, &[]);
+
+        assert_eq!(
+            value,
+            EnvelopeValue::JsonNull {
+                bytes: b"null".to_vec()
+            }
         );
     }
 

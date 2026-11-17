@@ -55,6 +55,9 @@ pub enum EnvelopeHeader {
 pub enum EnvelopeValue {
     /// Valid JSON, written in the `value` field.
     Decoded(serde_json::Value),
+    /// The JSON literal `null`, written as `value: null` plus `value_base64` with the original bytes.
+    /// The base64 field keeps it apart from a tombstone, which has no `value_base64`.
+    JsonNull { bytes: Vec<u8> },
     /// Bytes that could not be decoded, written as `value_base64` with `decode_error`.
     Undecodable { bytes: Vec<u8>, error: String },
     /// Only a prefix of the value was kept, written as `value_base64` with `value_truncated`.
@@ -122,6 +125,10 @@ impl MessageEnvelope {
     fn apply_value(&mut self, value_field: EnvelopeValue) {
         match value_field {
             EnvelopeValue::Decoded(value) => self.value = Some(value),
+            EnvelopeValue::JsonNull { bytes } => {
+                self.value = Some(serde_json::Value::Null);
+                self.value_base64 = Some(encode_base64(&bytes));
+            }
             EnvelopeValue::Undecodable { bytes, error } => {
                 self.value_base64 = Some(encode_base64(&bytes));
                 self.decode_error = Some(error);
@@ -525,6 +532,41 @@ mod tests {
             json.contains("\"decode_error\":\"value withheld: test reason\""),
             "{json}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn json_null_value_keeps_its_bytes_and_is_not_a_tombstone() -> CoreResult<()> {
+        let envelope = MessageEnvelope::from_record(
+            "pedidos",
+            0,
+            9,
+            None,
+            None,
+            EnvelopeValue::JsonNull {
+                bytes: b"null".to_vec(),
+            },
+            &[],
+        );
+        let json = json_of(&envelope)?;
+
+        assert!(
+            json.contains("\"value\":null,\"value_base64\":\"bnVsbA==\""),
+            "{json}"
+        );
+        assert!(!json.contains("decode_error"), "{json}");
+        assert!(!json.contains("value_truncated"), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn tombstone_has_no_value_base64() -> CoreResult<()> {
+        let envelope =
+            MessageEnvelope::from_record("pedidos", 0, 9, None, None, EnvelopeValue::Absent, &[]);
+        let json = json_of(&envelope)?;
+
+        assert!(json.contains("\"value\":null"), "{json}");
+        assert!(!json.contains("value_base64"), "{json}");
         Ok(())
     }
 

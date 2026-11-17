@@ -749,6 +749,19 @@ mod tests {
     }
 
     #[test]
+    fn envelope_json_null_with_base64_sends_null_bytes_not_tombstone() -> CoreResult<()> {
+        let inputs = vec![envelope(
+            r#"{"kafcli_envelope":1,"key":"k","value":null,"value_base64":"bnVsbA=="}"#,
+            1,
+        )];
+
+        let messages = prepare(&inputs, &options(1))?;
+
+        assert_eq!(messages[0].value, Some(b"null".to_vec()));
+        Ok(())
+    }
+
+    #[test]
     fn envelope_without_value_is_tombstone() -> CoreResult<()> {
         let inputs = vec![envelope(r#"{"kafcli_envelope":1,"key":"k"}"#, 1)];
 
