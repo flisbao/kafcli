@@ -1,16 +1,40 @@
+use crate::cli::schema_source_arguments::SchemaSourceArguments;
+use kafcli_core::codec::codec_selection::{EncoderSelection, ValueFormat, WireFormat};
 use kafcli_core::ops::produce::produce_input::InputSource;
 use std::path::PathBuf;
 
-/// Message format of the values. Only `json` exists in this release.
+/// Message format of the values.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProduceFormat {
     Json,
+    Avro,
 }
 
-/// Wire encoding of the values. Only `raw` exists in this release.
+impl ProduceFormat {
+    pub fn to_value_format(self) -> ValueFormat {
+        match self {
+            Self::Json => ValueFormat::Json,
+            Self::Avro => ValueFormat::Avro,
+        }
+    }
+}
+
+/// Wire encoding of the values.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProduceWire {
     Raw,
+    Confluent,
+    Azure,
+}
+
+impl ProduceWire {
+    pub fn to_wire_format(self) -> WireFormat {
+        match self {
+            Self::Raw => WireFormat::Raw,
+            Self::Confluent => WireFormat::Confluent,
+            Self::Azure => WireFormat::Azure,
+        }
+    }
 }
 
 /// How the input text is read: one JSON document or NDJSON of payloads, or NDJSON of envelopes.
@@ -36,6 +60,11 @@ pub struct ProduceArguments {
     /// Wire encoding of the values
     #[arg(long, value_enum, default_value_t = ProduceWire::Raw)]
     pub wire: ProduceWire,
+    #[command(flatten)]
+    pub schema_source: SchemaSourceArguments,
+    /// Sends JSON values without checking them against the schema (--format json only)
+    #[arg(long)]
+    pub no_validate: bool,
     /// Input text given on the command line (one JSON document or NDJSON)
     #[arg(long)]
     pub value: Option<String>,
@@ -78,6 +107,16 @@ pub struct ProduceArguments {
 }
 
 impl ProduceArguments {
+    /// Everything the encoder choice depends on, from the flags.
+    pub fn encoder_selection(&self) -> EncoderSelection {
+        EncoderSelection {
+            format: self.format.to_value_format(),
+            wire: self.wire.to_wire_format(),
+            schema: self.schema_source.to_schema_source(),
+            validate: !self.no_validate,
+        }
+    }
+
     /// The single input source the argument group guarantees. Clap rejects a command without one.
     pub fn input_source(&self) -> InputSource {
         if self.stdin {

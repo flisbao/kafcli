@@ -18,6 +18,8 @@ const HEX_PREVIEW_BYTES: usize = 32;
 #[derive(Serialize)]
 pub struct DryRunView {
     pub dry_run: bool,
+    /// Registry id of the schema the values were encoded with; `null` without a registry schema.
+    pub schema_id: Option<String>,
     pub messages: Vec<DryRunMessage>,
     pub messages_truncated: bool,
 }
@@ -35,9 +37,10 @@ pub struct DryRunMessage {
 }
 
 impl DryRunView {
-    pub fn from_messages(messages: &[PreparedMessage]) -> Self {
+    pub fn from_messages(messages: &[PreparedMessage], schema_id: Option<String>) -> Self {
         Self {
             dry_run: true,
+            schema_id,
             messages: messages
                 .iter()
                 .take(MAXIMUM_PREVIEWED_MESSAGES)
@@ -129,6 +132,12 @@ impl TableRenderable for DryRunView {
 
         let mut rendered = String::from("dry run: nothing was sent");
         rendered.push('\n');
+        if let Some(schema_id) = &self.schema_id {
+            rendered.push_str(&format!(
+                "schema id: {}\n",
+                sanitize_for_terminal(schema_id)
+            ));
+        }
         rendered.push_str(&table.to_string());
         if self.messages_truncated {
             rendered.push_str(&format!(
@@ -191,7 +200,7 @@ mod tests {
     #[test]
     fn hex_is_lowercase_first_32_bytes_without_separators() {
         let value = vec![0xAB; 40];
-        let view = DryRunView::from_messages(&[message(None, Some(&value))]);
+        let view = DryRunView::from_messages(&[message(None, Some(&value))], None);
 
         let hex = view.messages[0].value_hex.as_deref().unwrap_or_default();
         assert_eq!(hex, "ab".repeat(32));
@@ -200,7 +209,7 @@ mod tests {
 
     #[test]
     fn short_value_shows_all_its_bytes_in_hex() {
-        let view = DryRunView::from_messages(&[message(None, Some(br#"{"id":1}"#))]);
+        let view = DryRunView::from_messages(&[message(None, Some(br#"{"id":1}"#))], None);
 
         assert_eq!(
             view.messages[0].value_hex.as_deref(),
@@ -210,7 +219,7 @@ mod tests {
 
     #[test]
     fn non_utf8_key_is_shown_as_base64() {
-        let view = DryRunView::from_messages(&[message(Some(&[0xff, 0x00]), Some(b"{}"))]);
+        let view = DryRunView::from_messages(&[message(Some(&[0xff, 0x00]), Some(b"{}"))], None);
 
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["messages"][0]["key"], serde_json::Value::Null);
@@ -219,7 +228,7 @@ mod tests {
 
     #[test]
     fn tombstone_has_null_value_fields() {
-        let view = DryRunView::from_messages(&[message(Some(b"k"), None)]);
+        let view = DryRunView::from_messages(&[message(Some(b"k"), None)], None);
 
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["messages"][0]["value_bytes"], serde_json::Value::Null);
@@ -232,7 +241,7 @@ mod tests {
         let messages: Vec<PreparedMessage> = (0..MAXIMUM_PREVIEWED_MESSAGES + 1)
             .map(|_| message(None, Some(b"{}")))
             .collect();
-        let value = serde_json::to_value(DryRunView::from_messages(&messages)).unwrap();
+        let value = serde_json::to_value(DryRunView::from_messages(&messages, None)).unwrap();
 
         assert_eq!(value["dry_run"], true);
         assert_eq!(value["messages_truncated"], true);
@@ -250,7 +259,7 @@ mod tests {
             value: Some(b"v\x07".to_vec()),
         });
 
-        let rendered = DryRunView::from_messages(&[prepared]).render_table();
+        let rendered = DryRunView::from_messages(&[prepared], None).render_table();
 
         assert!(!rendered.contains('\x1b'), "rendered: {rendered}");
         assert!(!rendered.contains('\x07'), "rendered: {rendered}");

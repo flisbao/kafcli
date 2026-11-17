@@ -39,6 +39,21 @@ docker compose -f tests/fixtures/compose.yaml down -v
 - `integration_produce_consume` (núcleo) cobre a API de `kafcli-core`: offsets, `--count`, `--from`, truncamento, filtros, redação e o consumo sem commit.
 - `--test-threads=1` evita que os testes disputem o broker ao mesmo tempo; os testes não dependem da ordem entre si.
 
+## Testes de schemas (Avro e JSON Schema)
+
+O broker plaintext também expõe o Schema Registry em `127.0.0.1:18081` (API compatível com o Confluent). Os testes `integration_schemas_cli` registram os schemas com o cliente do núcleo, nunca com `produce`, e esperam `GET /subjects` responder 200 por até 30 s.
+
+```bash
+docker compose -f tests/fixtures/compose.yaml up -d --wait
+cargo test -p kafcli --test integration_schemas_cli -- --ignored --test-threads=1
+cargo test -p kafcli --test integration_produce_consume_cli -- --ignored --test-threads=1
+docker compose -f tests/fixtures/compose.yaml down -v
+```
+
+- Os casos Confluent usam o registry do próprio broker; os casos Azure usam um servidor local de teste no lugar do registry, em `http://`, com um token `bearer` fictício.
+- O teste de Avro profundamente aninhado grava os bytes diretamente pelo núcleo, porque `produce` recusa JSON com mais de 64 níveis.
+- Os subjects e tópicos têm nomes únicos por execução e os tópicos são removidos ao final, mesmo quando um teste falha.
+
 ## Certificados
 
 `generate-certificates.sh` gera uma CA própria e os certificados de servidor e de cliente em `tests/fixtures/certificates/` (PEM). O diretório está no `.gitignore`: chaves geradas nunca são commitadas. Os certificados são descartáveis e valem para uso local e de CI apenas.

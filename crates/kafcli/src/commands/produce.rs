@@ -1,6 +1,5 @@
-use crate::cli::produce_arguments::{
-    ProduceArguments, ProduceFormat, ProduceInputArgument, ProduceWire,
-};
+use crate::cli::produce_arguments::{ProduceArguments, ProduceFormat, ProduceInputArgument};
+use crate::commands::registry_connection::{connect_schema_registry, encoder_needs_registry};
 use crate::execution_context::ExecutionContext;
 use crate::output::produce_dry_run_view::DryRunView;
 use crate::output::produce_report_view::ProduceReportView;
@@ -10,7 +9,7 @@ use crate::output::terminal_text::sanitize_for_terminal;
 use anyhow::bail;
 use kafcli_core::audit::audit_record::{AuditOutcome, AuditRecord};
 use kafcli_core::audit::audit_writer::{AuditWriter, JsonLinesAuditWriter};
-use kafcli_core::codec::{RawJsonCodec, ValueEncoder};
+use kafcli_core::codec::codec_selection::{SchemaSource, build_value_encoder};
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::config::overrides::{ContextOverrides, apply_context_overrides};
 use kafcli_core::config::paths::default_state_directory;
@@ -38,10 +37,11 @@ const AUDIT_COMMAND_NAME: &str = "produce";
 
 /// Produces the input messages to `--topic` of the selected context.
 ///
-/// Order: select the context and warn if it is protected; read and prepare every message (input and
-/// template errors stop here, before any connection); stop after rendering when `--dry-run`; ask
-/// the guard for a write; produce; audit; render. A run with failed deliveries returns its report
-/// together with the error that makes the process exit 1.
+/// Order: select the context and warn if it is protected; build the encoder, which reads the schema
+/// from its file or from the registry (reads only, never a registration); read and prepare every
+/// message (input and template errors stop here, before any connection); stop after rendering when
+/// `--dry-run`; ask the guard for a write; produce; audit; render. A run with failed deliveries
+/// returns its report together with the error that makes the process exit 1.
 pub fn produce(
     execution: &ExecutionContext,
     resolver: &dyn SecretResolver,
@@ -55,6 +55,21 @@ pub fn produce(
     let context_name = selected.name;
     let target = format!("topic={}", arguments.topic);
 
+    let selection = arguments.encoder_selection();
+    warn_if_values_unvalidated(arguments);
+    let timeout = Duration::from_secs(arguments.timeout_seconds);
+    let registry = if encoder_needs_registry(&selection) {
+        Some(connect_schema_registry(
+            &context_name,
+            &selected.context,
+            resolver,
+            timeout,
+        )?)
+    } else {
+        None
+    };
+    let selected_encoder = build_value_encoder(&selection, registry.as_deref())?;
+
     let inputs = read_inputs(arguments)?;
     if inputs.is_empty() {
         bail!("no messages to produce");
@@ -63,14 +78,14 @@ pub fn produce(
     let messages = prepare_messages(
         &inputs,
         &options,
-        select_value_encoder(arguments.format, arguments.wire),
+        selected_encoder.encoder.as_ref(),
         &ProcessEnvironment,
         OffsetDateTime::now_utc(),
     )?;
 
     if arguments.dry_run {
         write_audit_record(&context_name, &target, AuditOutcome::DryRun, None);
-        let view = DryRunView::from_messages(&messages);
+        let view = DryRunView::from_messages(&messages, selected_encoder.schema_id.clone());
         return Ok(RenderedOutput::complete(render_output(
             &view,
             execution.global.output,
@@ -158,10 +173,14 @@ fn build_options(arguments: &ProduceArguments) -> ProduceOptions {
     }
 }
 
-/// Only JSON values on the raw wire exist in this release, so the pair selects the one codec.
-fn select_value_encoder(format: ProduceFormat, wire: ProduceWire) -> &'static dyn ValueEncoder {
-    match (format, wire) {
-        (ProduceFormat::Json, ProduceWire::Raw) => &RawJsonCodec,
+/// `--no-validate` with a JSON schema source sends the values unchecked; say so on stderr.
+fn warn_if_values_unvalidated(arguments: &ProduceArguments) {
+    let schema_given = arguments.schema_source.to_schema_source() != SchemaSource::Absent;
+    if arguments.no_validate && arguments.format == ProduceFormat::Json && schema_given {
+        let _ = writeln!(
+            io::stderr().lock(),
+            "warning: --no-validate: values are sent without schema validation"
+        );
     }
 }
 
@@ -189,6 +208,8 @@ fn write_audit_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::produce_arguments::ProduceWire;
+    use crate::cli::schema_source_arguments::SchemaSourceArguments;
 
     #[test]
     fn options_carry_template_switch_and_timeout() {
@@ -196,6 +217,13 @@ mod tests {
             topic: "orders".to_string(),
             format: ProduceFormat::Json,
             wire: ProduceWire::Raw,
+            schema_source: SchemaSourceArguments {
+                schema_file: None,
+                schema_subject: None,
+                schema_version: None,
+                schema_id: None,
+            },
+            no_validate: false,
             value: Some("{}".to_string()),
             file: None,
             stdin: false,

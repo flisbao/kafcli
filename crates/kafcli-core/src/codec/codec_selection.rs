@@ -363,8 +363,13 @@ fn check_registry_type(registry: &dyn SchemaRegistry, wire: WireFormat) -> CoreR
     if actual == required {
         return Ok(());
     }
+    let article = if required.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
     Err(invalid(format!(
-        "--wire {required} needs a {required} schema_registry, but the context has {actual}"
+        "--wire {required} needs {article} {required} schema_registry, but the context has {actual}"
     )))
 }
 
@@ -887,7 +892,7 @@ mod tests {
         );
         assert_eq!(
             azure_on_confluent,
-            "--wire azure needs a azure schema_registry, but the context has confluent"
+            "--wire azure needs an azure schema_registry, but the context has confluent"
         );
         assert_eq!(
             decoder_on_azure,
