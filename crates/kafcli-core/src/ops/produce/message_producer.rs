@@ -392,17 +392,29 @@ struct DeliveryTally {
 }
 
 impl DeliveryTally {
-    /// Records every outcome waiting in the channel and returns how many arrived.
+    /// Records every outcome waiting in the channel and returns how many were acknowledged.
     fn collect(&mut self, receiver: &Receiver<Result<DeliveryReport, String>>) -> usize {
-        let mut collected = 0;
-        for outcome in receiver.try_iter() {
-            collected += 1;
+        self.record_outcomes(receiver.try_iter())
+    }
+
+    /// Records each outcome and returns how many were acknowledged deliveries.
+    ///
+    /// Failed deliveries do not count, so a dead broker's error reports cannot look like progress.
+    fn record_outcomes(
+        &mut self,
+        outcomes: impl IntoIterator<Item = Result<DeliveryReport, String>>,
+    ) -> usize {
+        let mut acknowledged = 0;
+        for outcome in outcomes {
             match outcome {
-                Ok(report) => self.record_delivery(report),
+                Ok(report) => {
+                    acknowledged += 1;
+                    self.record_delivery(report);
+                }
                 Err(message) => self.note_error(&message),
             }
         }
-        collected
+        acknowledged
     }
 
     fn record_delivery(&mut self, report: DeliveryReport) {
@@ -883,6 +895,27 @@ mod tests {
         };
         assert_eq!(message, "invalid input: prepared messages exceed 1 GiB");
         Ok(())
+    }
+
+    #[test]
+    fn failed_deliveries_do_not_count_as_progress() {
+        let report = DeliveryReport {
+            partition: 0,
+            offset: 0,
+            timestamp: None,
+        };
+        let mut tally = DeliveryTally::default();
+
+        let failures_only = tally.record_outcomes(vec![
+            Err("Message timed out".to_string()),
+            Err("Message timed out".to_string()),
+        ]);
+        assert_eq!(failures_only, 0);
+        assert_eq!(tally.sent, 0);
+
+        let mixed = tally.record_outcomes(vec![Err("Message timed out".to_string()), Ok(report)]);
+        assert_eq!(mixed, 1);
+        assert_eq!(tally.sent, 1);
     }
 
     #[test]
