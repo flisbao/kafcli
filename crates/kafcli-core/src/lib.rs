@@ -1,10 +1,11 @@
 //! Core library for kafcli.
 //!
-//! Modules: configuration, secrets, auth, connection, capability, error, guard, audit, message and template.
+//! Modules: configuration, secrets, auth, connection, capability, codec, error, guard, audit, message and template.
 
 pub mod audit;
 pub mod auth;
 pub mod capability;
+pub mod codec;
 pub mod config;
 pub mod connection;
 pub mod error;
