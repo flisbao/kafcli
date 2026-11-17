@@ -43,12 +43,32 @@ impl RegistryResponse {
 }
 
 impl RegistryHttpClient {
+    /// Builds a client that sends the Confluent `Accept` media type on every request.
     pub fn new(
         base_url: &str,
         auth: &RegistryAuthConfig,
         ca_location: Option<&Path>,
         resolver: &dyn SecretResolver,
         timeout: Duration,
+    ) -> CoreResult<Self> {
+        Self::new_with_accept(
+            base_url,
+            auth,
+            ca_location,
+            resolver,
+            timeout,
+            SCHEMA_REGISTRY_ACCEPT,
+        )
+    }
+
+    /// Same as `new`, with the `Accept` media type that every request sends by default.
+    pub fn new_with_accept(
+        base_url: &str,
+        auth: &RegistryAuthConfig,
+        ca_location: Option<&Path>,
+        resolver: &dyn SecretResolver,
+        timeout: Duration,
+        accept: &'static str,
     ) -> CoreResult<Self> {
         let parsed =
             Url::parse(base_url).map_err(|_| registry_error("schema registry URL is not valid"))?;
@@ -59,7 +79,7 @@ impl RegistryHttpClient {
         }
 
         let mut headers = HeaderMap::new();
-        headers.insert(ACCEPT, HeaderValue::from_static(SCHEMA_REGISTRY_ACCEPT));
+        headers.insert(ACCEPT, HeaderValue::from_static(accept));
         let mut builder = Client::builder().timeout(timeout);
         let mut secret_fragments = Vec::new();
 
