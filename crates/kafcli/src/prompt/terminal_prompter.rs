@@ -7,10 +7,6 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 const MAXIMUM_CONFIRMATION_INPUT_BYTES: u64 = 1024;
 
 /// Asks questions on stderr and reads answers from stdin.
-#[allow(
-    dead_code,
-    reason = "the prompter is wired into the guarded commands of a later plan"
-)]
 pub struct TerminalPrompter;
 
 impl ConfirmationPrompter for TerminalPrompter {

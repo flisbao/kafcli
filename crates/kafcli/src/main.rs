@@ -13,12 +13,14 @@ use cli::context_arguments::ContextCommand;
 use commands::context::{
     add_context, list_contexts, show_context, show_current_context, test_context, use_context,
 };
+use commands::produce::produce;
 use execution_context::ExecutionContext;
 use exit_code::{KafcliExitCode, resolve_exit_code};
 use kafcli_core::secret::composite_resolver::CompositeSecretResolver;
 use kafcli_core::secret::resolver::SecretResolver;
-use output::renderer::render_output;
+use output::renderer::{RenderedOutput, render_output};
 use output::terminal_text::sanitize_for_terminal;
+use prompt::terminal_prompter::TerminalPrompter;
 use std::io::{self, ErrorKind as IoErrorKind, Write};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -31,11 +33,23 @@ fn main() -> ExitCode {
     logging::initialize_logging(arguments.global.verbosity);
     let resolver = CompositeSecretResolver::with_default_sources();
     match run(arguments, &resolver) {
-        Ok(rendered) => write_result_to_stdout(&rendered),
+        Ok(output) => write_command_output(output),
         Err(error) => {
             write_error_line(&format!("error: {error:#}"));
             resolve_exit_code(&error)
         }
+    }
+}
+
+/// Prints the command's text first, then its trailing error, so a partly failed run keeps its report on stdout.
+fn write_command_output(output: RenderedOutput) -> ExitCode {
+    let stdout_exit_code = write_result_to_stdout(&output.text);
+    match output.trailing_error {
+        Some(error) => {
+            write_error_line(&format!("error: {error:#}"));
+            resolve_exit_code(&error)
+        }
+        None => stdout_exit_code,
     }
 }
 
@@ -74,35 +88,43 @@ fn write_result_to_stdout(rendered: &str) -> ExitCode {
     }
 }
 
-fn run(arguments: CommandLineArguments, resolver: &dyn SecretResolver) -> anyhow::Result<String> {
+fn run(
+    arguments: CommandLineArguments,
+    resolver: &dyn SecretResolver,
+) -> anyhow::Result<RenderedOutput> {
     let output_format = arguments.global.output;
     let execution = ExecutionContext::from_global_arguments(arguments.global)?;
-    let rendered = match arguments.command {
-        TopLevelCommand::Context { command } => match command {
-            ContextCommand::List => render_output(&list_contexts(&execution)?, output_format)?,
-            ContextCommand::Show { name } => {
-                render_output(&show_context(&execution, name.as_deref())?, output_format)?
-            }
-            ContextCommand::Add(add_arguments) => {
-                render_output(&add_context(&execution, &add_arguments)?, output_format)?
-            }
-            ContextCommand::Use { name } => {
-                render_output(&use_context(&execution, &name)?, output_format)?
-            }
-            ContextCommand::Current => {
-                render_output(&show_current_context(&execution)?, output_format)?
-            }
-            ContextCommand::Test {
-                name,
-                timeout_seconds,
-            } => {
-                let timeout = Duration::from_secs(timeout_seconds);
-                render_output(
-                    &test_context(&execution, resolver, name.as_deref(), timeout)?,
-                    output_format,
-                )?
-            }
-        },
-    };
-    Ok(rendered)
+    match arguments.command {
+        TopLevelCommand::Context { command } => {
+            let rendered = match command {
+                ContextCommand::List => render_output(&list_contexts(&execution)?, output_format)?,
+                ContextCommand::Show { name } => {
+                    render_output(&show_context(&execution, name.as_deref())?, output_format)?
+                }
+                ContextCommand::Add(add_arguments) => {
+                    render_output(&add_context(&execution, &add_arguments)?, output_format)?
+                }
+                ContextCommand::Use { name } => {
+                    render_output(&use_context(&execution, &name)?, output_format)?
+                }
+                ContextCommand::Current => {
+                    render_output(&show_current_context(&execution)?, output_format)?
+                }
+                ContextCommand::Test {
+                    name,
+                    timeout_seconds,
+                } => {
+                    let timeout = Duration::from_secs(timeout_seconds);
+                    render_output(
+                        &test_context(&execution, resolver, name.as_deref(), timeout)?,
+                        output_format,
+                    )?
+                }
+            };
+            Ok(RenderedOutput::complete(rendered))
+        }
+        TopLevelCommand::Produce(produce_arguments) => {
+            produce(&execution, resolver, &TerminalPrompter, &produce_arguments)
+        }
+    }
 }

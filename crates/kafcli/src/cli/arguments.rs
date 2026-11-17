@@ -1,4 +1,5 @@
 use crate::cli::context_arguments::ContextCommand;
+use crate::cli::produce_arguments::ProduceArguments;
 use crate::output::output_format::OutputFormat;
 use std::path::PathBuf;
 
@@ -44,4 +45,14 @@ pub enum TopLevelCommand {
         #[command(subcommand)]
         command: ContextCommand,
     },
+    /// Produce messages to a topic
+    #[command(after_help = r#"Examples:
+  kafcli produce --topic orders --value '{"id": 1, "total": 9.5}'
+  kafcli produce --topic orders --file orders.ndjson --key '{{field:id}}' --count 3 --rate 10
+  kafcli produce --topic orders --value '{"id": "{{uuid}}", "seq": "{{seq}}"}' --dry-run
+  kafcli produce --topic notes --value '{"text": "a {{ b"}' --no-template
+  kafcli consume --topic a --output json | kafcli produce --topic b --stdin --input envelope
+
+Payload text that contains a literal `{{` needs --no-template."#)]
+    Produce(ProduceArguments),
 }

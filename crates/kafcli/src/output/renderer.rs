@@ -15,6 +15,24 @@ struct JsonEnvelope<'a, T: Serialize> {
     data: &'a T,
 }
 
+/// What a command leaves for `main`: the text for stdout, and an error to report after that text.
+///
+/// A run can produce its full report and still fail (some deliveries were not acknowledged), so the
+/// report must reach stdout before the error reaches stderr.
+pub struct RenderedOutput {
+    pub text: String,
+    pub trailing_error: Option<anyhow::Error>,
+}
+
+impl RenderedOutput {
+    pub fn complete(text: String) -> Self {
+        Self {
+            text,
+            trailing_error: None,
+        }
+    }
+}
+
 /// Renders a command result in the requested format.
 pub fn render_output<T: Serialize + TableRenderable>(
     value: &T,
