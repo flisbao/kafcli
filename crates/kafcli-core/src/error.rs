@@ -24,6 +24,8 @@ pub enum CoreError {
     TopicNotFound(String),
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    #[error("schema registry error: {0}")]
+    SchemaRegistry(String),
     #[error("template error: {0}")]
     Template(String),
     #[error("operation aborted: {0}")]

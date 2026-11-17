@@ -17,6 +17,7 @@ base64.workspace = true
 dirs.workspace = true
 figment.workspace = true
 rdkafka.workspace = true
+reqwest.workspace = true
 keyring = { workspace = true, optional = true }
 secrecy.workspace = true
 serde.workspace = true
