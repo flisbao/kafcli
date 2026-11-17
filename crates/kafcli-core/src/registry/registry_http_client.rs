@@ -1,3 +1,4 @@
+use super::registry_text::neutralize_registry_text;
 use crate::config::schema_registry_model::RegistryAuthConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
@@ -6,8 +7,9 @@ use base64::engine::general_purpose::STANDARD;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Certificate, Identity, Method, Url};
-use secrecy::ExposeSecret;
-use std::io::Read;
+use secrecy::{ExposeSecret, SecretString};
+use std::error::Error as StdError;
+use std::io::{self, Read};
 use std::path::Path;
 use std::time::Duration;
 
@@ -18,8 +20,8 @@ const SCHEMA_REGISTRY_ACCEPT: &str = "application/vnd.schemaregistry.v1+json";
 pub struct RegistryHttpClient {
     client: Client,
     base_url: String,
-    /// Plain secret text, kept only to redact it from registry messages.
-    secret_fragments: Vec<String>,
+    /// Secret values, kept only to redact them from registry text.
+    secret_fragments: Vec<SecretString>,
 }
 
 /// Raw answer of the registry. Status outside 2xx is not an error here; the caller interprets it.
@@ -76,17 +78,18 @@ impl RegistryHttpClient {
             RegistryAuthConfig::Anonymous => {}
             RegistryAuthConfig::Basic(config) => {
                 let password = resolver.resolve_secret(&config.secret_ref)?;
-                let credentials = format!("{}:{}", config.username, password.expose_secret());
-                let encoded = STANDARD.encode(&credentials);
-                secret_fragments.push(password.expose_secret().to_string());
+                let credentials =
+                    SecretString::from(format!("{}:{}", config.username, password.expose_secret()));
+                let encoded = SecretString::from(STANDARD.encode(credentials.expose_secret()));
+                insert_authorization(&mut headers, &format!("Basic {}", encoded.expose_secret()))?;
+                secret_fragments.push(password);
                 secret_fragments.push(credentials);
-                secret_fragments.push(encoded.clone());
-                insert_authorization(&mut headers, &format!("Basic {encoded}"))?;
+                secret_fragments.push(encoded);
             }
             RegistryAuthConfig::Bearer(config) => {
                 let token = resolver.resolve_secret(&config.token_ref)?;
-                secret_fragments.push(token.expose_secret().to_string());
                 insert_authorization(&mut headers, &format!("Bearer {}", token.expose_secret()))?;
+                secret_fragments.push(token);
             }
             RegistryAuthConfig::MutualTls(config) => {
                 let mut pem = read_file(&config.certificate_location, "client certificate")?;
@@ -113,10 +116,16 @@ impl RegistryHttpClient {
     pub fn redact_secrets(&self, text: &str) -> String {
         self.secret_fragments
             .iter()
+            .map(|fragment| fragment.expose_secret())
             .filter(|fragment| !fragment.is_empty())
             .fold(text.to_string(), |redacted, fragment| {
-                redacted.replace(fragment.as_str(), "*")
+                redacted.replace(fragment, "*")
             })
+    }
+
+    /// Redacts secrets, then neutralizes and truncates text that came from the registry or the network.
+    pub fn sanitize_text(&self, text: &str) -> String {
+        neutralize_registry_text(&self.redact_secrets(text))
     }
 
     /// Sends one request and reads the whole body, up to 8 MiB.
@@ -138,7 +147,7 @@ impl RegistryHttpClient {
         let response = request.send().map_err(|error| {
             registry_error(format!(
                 "request to schema registry failed: {}",
-                error.without_url()
+                self.describe_transport_error(error)
             ))
         })?;
 
@@ -155,9 +164,16 @@ impl RegistryHttpClient {
             .collect();
         let mut limited = Read::take(response, MAX_RESPONSE_BYTES + 1);
         let mut body = Vec::new();
-        limited
-            .read_to_end(&mut body)
-            .map_err(|_| registry_error("could not read the schema registry response"))?;
+        limited.read_to_end(&mut body).map_err(|error| {
+            let cause = if error.kind() == io::ErrorKind::TimedOut {
+                "timed out".to_string()
+            } else {
+                self.sanitize_text(&error.to_string())
+            };
+            registry_error(format!(
+                "could not read the schema registry response: {cause}"
+            ))
+        })?;
         if body.len() as u64 > MAX_RESPONSE_BYTES {
             return Err(registry_error("schema registry response larger than 8 MiB"));
         }
@@ -166,6 +182,28 @@ impl RegistryHttpClient {
             body,
             headers,
         })
+    }
+
+    /// Names the kind of transport failure and appends its cause chain, without any URL or secret.
+    fn describe_transport_error(&self, error: reqwest::Error) -> String {
+        let kind = if error.is_timeout() {
+            "timed out"
+        } else if error.is_connect() {
+            "could not connect"
+        } else if error.is_builder() {
+            "invalid request"
+        } else {
+            "error sending request"
+        };
+        let error = error.without_url();
+        let mut description = kind.to_string();
+        let mut cause = StdError::source(&error);
+        while let Some(current) = cause {
+            description.push_str(": ");
+            description.push_str(&current.to_string());
+            cause = current.source();
+        }
+        self.sanitize_text(&description)
     }
 }
 
@@ -196,6 +234,9 @@ mod tests {
     use crate::config::schema_registry_model::{RegistryBasicAuthConfig, RegistryBearerAuthConfig};
     use crate::registry::fake_registry_server::{FakeRegistryServer, FakeRoute};
     use crate::secret::fixed_resolver::FixedSecretResolver;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     fn get_route(path: &str, status: u16, body: String) -> FakeRoute {
         FakeRoute {
@@ -297,6 +338,40 @@ mod tests {
         assert_eq!(
             error,
             "schema registry error: schema registry URL must not contain credentials"
+        );
+    }
+
+    #[test]
+    fn silent_registry_reports_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (release, hold) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let accepted = listener.accept();
+            let _ = hold.recv();
+            drop(accepted);
+        });
+        let client = RegistryHttpClient::new(
+            &url,
+            &RegistryAuthConfig::Anonymous,
+            None,
+            &FixedSecretResolver::returning("unused"),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+
+        let error = client
+            .send_request(Method::GET, "/x", None, None)
+            .err()
+            .unwrap()
+            .to_string();
+
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert!(
+            error
+                .starts_with("schema registry error: request to schema registry failed: timed out"),
+            "error: {error}"
         );
     }
 

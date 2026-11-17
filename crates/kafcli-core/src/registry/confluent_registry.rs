@@ -11,7 +11,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 const CONFLUENT_CONTENT_TYPE: &str = "application/vnd.schemaregistry.v1+json";
-const MAX_MESSAGE_CHARS: usize = 200;
+const MAX_COMPATIBILITY_MESSAGES: usize = 50;
 
 /// Schema Registry with the Confluent REST API.
 pub struct ConfluentSchemaRegistry {
@@ -123,18 +123,7 @@ impl ConfluentSchemaRegistry {
 
     /// Redacts secrets, replaces control characters with `?` and keeps at most 200 characters.
     fn sanitize(&self, text: &str) -> String {
-        self.http
-            .redact_secrets(text)
-            .chars()
-            .map(|character| {
-                if character.is_control() {
-                    '?'
-                } else {
-                    character
-                }
-            })
-            .take(MAX_MESSAGE_CHARS)
-            .collect()
+        self.http.sanitize_text(text)
     }
 
     fn schema_kind(&self, schema_type: Option<&str>) -> CoreResult<SchemaKind> {
@@ -203,7 +192,7 @@ impl SchemaRegistry for ConfluentSchemaRegistry {
             self.check_schema_shape(body.schema_type.as_deref(), body.references.as_ref())?;
         Ok(RegisteredSchema {
             id: SchemaId::Confluent(body.id),
-            subject: Some(body.subject),
+            subject: Some(self.sanitize(&body.subject)),
             version: Some(body.version),
             kind,
             text: body.schema,
@@ -252,7 +241,13 @@ impl SchemaRegistry for ConfluentSchemaRegistry {
         let body: CompatibilityBody = self.exchange(Method::POST, &path, Some(&payload), lookup)?;
         Ok(CompatibilityReport {
             compatible: body.is_compatible,
-            messages: body.messages.unwrap_or_default(),
+            messages: body
+                .messages
+                .unwrap_or_default()
+                .iter()
+                .take(MAX_COMPATIBILITY_MESSAGES)
+                .map(|message| self.sanitize(message))
+                .collect(),
         })
     }
 
@@ -568,6 +563,53 @@ mod tests {
         assert_eq!(suffix.chars().count(), 200);
         assert!(suffix.starts_with("bad?[2J"), "suffix: {suffix}");
         assert!(!suffix.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn compatibility_messages_are_sanitized_and_capped() {
+        let mut messages: Vec<String> = vec![format!("bad\u{1b}[2J{}", "x".repeat(300))];
+        messages.extend((1..60).map(|number| format!("message {number}")));
+        let body = json!({"is_compatible": false, "messages": messages}).to_string();
+        let server = FakeRegistryServer::start(vec![route(
+            "POST",
+            "/compatibility/subjects/pedidos-value/versions/latest?verbose=true",
+            200,
+            &body,
+        )])
+        .unwrap();
+
+        let report = anonymous_registry(&server)
+            .check_compatibility(
+                "pedidos-value",
+                SchemaVersionSelector::Latest,
+                SchemaKind::Avro,
+                r#"{"type":"string"}"#,
+            )
+            .unwrap();
+
+        assert_eq!(report.messages.len(), 50);
+        let first = &report.messages[0];
+        assert!(first.starts_with("bad?[2J"), "message: {first}");
+        assert_eq!(first.chars().count(), 200);
+        assert!(!first.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn server_subject_is_neutralized() {
+        let server = FakeRegistryServer::start(vec![route(
+            "GET",
+            "/subjects/pedidos-value/versions/latest",
+            200,
+            &json!({"subject": "pedidos\u{7}-value", "id": 1, "version": 1, "schema": "{}"})
+                .to_string(),
+        )])
+        .unwrap();
+
+        let schema = anonymous_registry(&server)
+            .fetch_schema_by_subject("pedidos-value", SchemaVersionSelector::Latest)
+            .unwrap();
+
+        assert_eq!(schema.subject.as_deref(), Some("pedidos?-value"));
     }
 
     #[test]
