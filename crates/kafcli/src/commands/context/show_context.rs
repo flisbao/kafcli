@@ -1,5 +1,5 @@
 use crate::execution_context::ExecutionContext;
-use crate::output::context_views::ContextDetailView;
+use crate::output::context_views::{ContextDetailView, RegistryDetailView};
 use kafcli_core::auth::provider_factory::create_auth_provider;
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::config::model::AuthConfig;
@@ -24,7 +24,11 @@ pub fn show_context(
         principal,
         secret_references: collect_secret_references(&selected.context.auth),
         protected: selected.context.protected,
-        has_schema_registry: selected.context.schema_registry.is_some(),
+        schema_registry: selected
+            .context
+            .schema_registry
+            .as_ref()
+            .map(RegistryDetailView::from_config),
     })
 }
 

@@ -3,6 +3,7 @@ use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
 use kafcli_core::config::model::ConnectionContext;
+use kafcli_core::config::schema_registry_model::SchemaRegistryConfig;
 use serde::Serialize;
 
 /// One context as listed by `context list`, `context add` and `context use`.
@@ -41,7 +42,38 @@ pub struct ContextDetailView {
     pub principal: Option<String>,
     pub secret_references: Vec<String>,
     pub protected: bool,
-    pub has_schema_registry: bool,
+    pub schema_registry: Option<RegistryDetailView>,
+}
+
+/// The Schema Registry of a context, as shown by `context show`. Secret references are listed, never resolved.
+#[derive(Serialize)]
+pub struct RegistryDetailView {
+    pub registry_type: String,
+    pub url: String,
+    pub group: Option<String>,
+    pub auth_type: String,
+    pub secret_references: Vec<String>,
+}
+
+impl RegistryDetailView {
+    pub fn from_config(config: &SchemaRegistryConfig) -> Self {
+        let group = match config {
+            SchemaRegistryConfig::Azure(azure) => Some(azure.group.clone()),
+            SchemaRegistryConfig::Confluent(_) => None,
+        };
+        Self {
+            registry_type: config.type_name().to_string(),
+            url: config.url().to_string(),
+            group,
+            auth_type: config.auth().type_name().to_string(),
+            secret_references: config
+                .auth()
+                .secret_references()
+                .into_iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
+    }
 }
 
 /// The name of the current context, as printed by `context current`.
@@ -95,10 +127,12 @@ impl TableRenderable for ContextDetailView {
             ))),
         ]);
         table.add_row(vec![Cell::new("protected"), Cell::new(self.protected)]);
-        table.add_row(vec![
-            Cell::new("schema_registry"),
-            Cell::new(self.has_schema_registry),
-        ]);
+        for (field, value) in schema_registry_rows(self.schema_registry.as_ref()) {
+            table.add_row(vec![
+                Cell::new(field),
+                Cell::new(sanitize_for_terminal(&value)),
+            ]);
+        }
         table.to_string()
     }
 }
@@ -129,6 +163,28 @@ fn build_table(headers: &[&str]) -> Table {
     *table.style_mut() = UTF8_FULL_CONDENSED;
     table.set_header(headers.iter().map(Cell::new).collect::<Vec<_>>());
     table
+}
+
+fn schema_registry_rows(registry: Option<&RegistryDetailView>) -> Vec<(&'static str, String)> {
+    let Some(registry) = registry else {
+        return vec![("schema_registry", "-".to_string())];
+    };
+    vec![
+        (
+            "schema_registry.registry_type",
+            registry.registry_type.clone(),
+        ),
+        ("schema_registry.url", registry.url.clone()),
+        (
+            "schema_registry.group",
+            registry.group.clone().unwrap_or_else(|| "-".to_string()),
+        ),
+        ("schema_registry.auth_type", registry.auth_type.clone()),
+        (
+            "schema_registry.secret_references",
+            join_or_dash(&registry.secret_references),
+        ),
+    ]
 }
 
 fn join_or_dash(values: &[String]) -> String {
