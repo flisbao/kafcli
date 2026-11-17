@@ -1,0 +1,70 @@
+{
+  "context_name": "eh-emu",
+  "run_identifier": "1794875047253",
+  "topic": "kafcli-probe",
+  "probe_group": "kafcli-probe-1794875047253",
+  "broker_count": 1,
+  "checks": [
+    {
+      "name": "cluster_metadata",
+      "outcome": "supported",
+      "detail": "1 brokers, 2 partitions",
+      "elapsed_millis": 4
+    },
+    {
+      "name": "idempotent_produce",
+      "outcome": "supported",
+      "detail": "3 messages acknowledged in partition 0",
+      "elapsed_millis": 700
+    },
+    {
+      "name": "headers_round_trip",
+      "outcome": "supported",
+      "detail": "3 messages read back with the run header",
+      "elapsed_millis": 115
+    },
+    {
+      "name": "list_offsets",
+      "outcome": "supported",
+      "detail": "low=0 high=3",
+      "elapsed_millis": 129
+    },
+    {
+      "name": "offsets_for_times",
+      "outcome": "supported",
+      "detail": "offset 0",
+      "elapsed_millis": 248
+    },
+    {
+      "name": "commit_offsets_outside_group",
+      "outcome": "supported",
+      "detail": "committed offset 1",
+      "elapsed_millis": 146
+    },
+    {
+      "name": "fetch_committed_offsets",
+      "outcome": "supported",
+      "detail": "committed offset 1",
+      "elapsed_millis": 215
+    },
+    {
+      "name": "list_groups",
+      "outcome": "supported",
+      "detail": "probe group listed: no",
+      "elapsed_millis": 385
+    },
+    {
+      "name": "describe_group",
+      "outcome": "failed",
+      "message": "probe group not found",
+      "elapsed_millis": 498
+    },
+    {
+      "name": "commit_rejected_while_group_active",
+      "outcome": "unsupported",
+      "error_code": "CommitAccepted",
+      "detail": "commit accepted while group had an active member",
+      "elapsed_millis": 3496
+    }
+  ]
+}

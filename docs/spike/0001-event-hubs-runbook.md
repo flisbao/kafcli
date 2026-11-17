@@ -25,12 +25,12 @@ mkdir -p /tmp/kafcli-spike-results
 ## 1. Custo estimado e limpeza
 
 - O Standard cobra por hora por unidade de throughput (TU) e tem cobrança adicional por
-  evento de ingresso e captura. O Premium cobra por hora por unidade de processamento (PU)
-  e custa bem mais. Preços mudam com o tempo; consulte a tabela oficial antes de começar:
+  evento de ingresso e captura. Preços mudam com o tempo; consulte a tabela oficial antes de
+  começar:
   <https://azure.microsoft.com/en-us/pricing/details/event-hubs/>.
 - O spike, usando só Standard, deve custar pouco se for apagado no mesmo dia. Deixar o
   namespace ligado gera cobrança por hora mesmo sem tráfego.
-- **Apague o resource group no fim** (passo 10). Ele remove o namespace, o event hub e o
+- **Apague o resource group no fim** (passo 9). Ele remove o namespace, o event hub e o
   schema group de uma vez.
 
 ## 2. Recursos no Azure (Standard)
@@ -74,8 +74,7 @@ az eventhubs namespace create \
 ```
 
 Fonte: <https://learn.microsoft.com/en-us/cli/azure/eventhubs/namespace>
-(`az eventhubs namespace create`; valores aceitos de `--sku`: Basic, Premium, Standard; de
-`--public-network-access`: Disabled, Enabled).
+(`az eventhubs namespace create`; de `--public-network-access`: Disabled, Enabled).
 
 **Event hub `kafcli-probe` com 2 partições** (é o tópico Kafka)
 
@@ -185,10 +184,9 @@ cargo run -q -p kafcli --example capability_probe -- \
   --output json > /tmp/kafcli-spike-results/eh-std-probe.json
 ```
 
-Esta nota vale para todas as saídas de probe e dump deste roteiro, inclusive a do emulador
-(passo 8): se o comando imprimir `error:`, apague o arquivo de saída, que fica vazio ou inválido,
-e registre o erro exato num arquivo de notas em `/tmp/kafcli-spike-results/` (no emulador, use
-`emulator-probe-notes.txt`).
+Esta nota vale para todas as saídas de probe e dump deste roteiro: se o comando imprimir
+`error:`, apague o arquivo de saída, que fica vazio ou inválido, e registre o erro exato num
+arquivo de notas em `/tmp/kafcli-spike-results/`.
 
 ## 5. Escritor Avro com o Azure Schema Registry
 
@@ -236,121 +234,17 @@ o schema id pode ir em header, e não como prefixo do payload, como no script Py
 tiver uma mensagem produzida assim, faça um dump dela e salve em
 `/tmp/kafcli-spike-results/` (por exemplo `java-producer-dump.json`).
 
-## 7. Opcional: mesmo fluxo no Premium
+## 7. Emulador do Event Hubs (fora deste roteiro)
 
-O Premium é opcional e mais caro (cobrança por PU, por hora). Só faça se precisar comparar
-com o Standard. Use outros nomes para não misturar resultados:
+O emulador oficial foi avaliado em `tests/fixtures/eventhubs-emulator/`. O README dessa pasta
+tem o passo a passo, a tabela de resultado do probe e o veredito. Este roteiro não o usa: ele
+cobre só o Standard na nuvem.
 
-```bash
-export KAFCLI_NS_PREM="kafcli-eh-prem-<sufixo>"
+Para subir o emulador é preciso aceitar a licença com `ACCEPT_EULA=Y` na linha de comando.
+Leia o EULA antes: <https://github.com/Azure/azure-event-hubs-emulator-installer/blob/main/EMULATOR_EULA.md>.
+O escritor do passo 5 não roda contra o emulador, porque ele não tem Schema Registry.
 
-az eventhubs namespace create \
-  --resource-group "$KAFCLI_SPIKE_RG" \
-  --name "$KAFCLI_NS_PREM" \
-  --location "$KAFCLI_LOC" \
-  --sku Premium \
-  --capacity 1 \
-  --enable-kafka true \
-  --public-network-access Enabled
-```
-
-Fontes: `--sku Premium` e `--capacity` (unidades Premium, de 0 a 10) em
-<https://learn.microsoft.com/en-us/cli/azure/eventhubs/namespace>. Repita para o Premium os
-comandos de event hub, schema group, papéis RBAC e connection string do passo 2, trocando
-`$KAFCLI_NS_STD` por `$KAFCLI_NS_PREM` e `KAFCLI_EH_STD_CONNECTION` por
-`KAFCLI_EH_PREM_CONNECTION`. Depois crie o contexto `eh-prem` com
-`--secret-ref env:KAFCLI_EH_PREM_CONNECTION` e rode os passos 3 a 6 com `--context eh-prem`
-(no passo 3 e no passo 5, use `$KAFCLI_NS_PREM` no lugar de `$KAFCLI_NS_STD`), gravando em
-`eh-prem-probe.json`, `eh-prem-dump.json` e `azure-sr-writer-premium.txt`.
-
-## 8. Emulador do Event Hubs (avaliação feita pelo autor)
-
-Esta etapa é sua. Ela não faz parte do que foi executado para este roteiro. Use a
-documentação oficial, que descreve o emulador como ferramenta local de desenvolvimento e
-teste, e não para produção:
-<https://learn.microsoft.com/en-us/azure/event-hubs/overview-emulator>.
-
-**Licença.** O emulador é distribuído sob os termos de licença da Microsoft. Para iniciá-lo
-é preciso aceitar esses termos definindo `ACCEPT_EULA=Y`. Leia o contrato antes:
-<https://github.com/Azure/azure-event-hubs-emulator-installer/blob/main/EMULATOR_EULA.md>.
-
-**Subida com Docker Compose.** Os passos e o arquivo `docker-compose.yaml` estão em
-<https://learn.microsoft.com/en-us/azure/event-hubs/test-locally-with-event-hub-emulator>.
-Em resumo, o `.env` precisa de `CONFIG_PATH` (caminho do `config.json`) e de
-`ACCEPT_EULA="Y"` (só depois de ler o EULA). Depois:
-
-```bash
-docker compose -f <caminho-do-docker-compose.yaml> up -d
-```
-
-O guia mostra que o Kafka do emulador usa a porta `9092` (mapeamento `9092:9092`) e exige
-`SecurityProtocol = SaslPlaintext` com `SaslMechanism = Plain` e usuário `$ConnectionString`.
-
-**O que o emulador não cobre.** Pela mesma documentação, o emulador não tem integração com
-o Schema Registry. Portanto o escritor do passo 5 não roda contra ele. Também não há
-autenticação Microsoft Entra ID, então o `DefaultAzureCredential` não funciona nele.
-
-**Probe contra o emulador.** Se quiser testar só o probe, use o tipo de autenticação
-`sasl-plain` com `--no-tls`. Isso gera `SASL_PLAINTEXT` com o mecanismo `PLAIN`, que é o que
-o emulador aceita, e não exige mudança no código do kafcli.
-
-1. Guarde a connection string do emulador numa variável de ambiente, sem gravá-la em arquivo.
-   O comando abaixo pede o valor sem mostrá-lo na tela e não o deixa no histórico do shell:
-
-   ```bash
-   read -rsp "Connection string do emulador: " KAFCLI_EH_EMU_CONNECTION && echo && export KAFCLI_EH_EMU_CONNECTION
-   ```
-
-   O formato, segundo o guia oficial, é
-   `Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=<chave>;UseDevelopmentEmulator=true;`.
-   O guia mostra `SAS_KEY_VALUE` como marcador. Use a chave do seu emulador.
-
-2. Crie o contexto. O usuário precisa ser `$ConnectionString` entre aspas simples, para que o
-   shell não tente expandir o `$`. A porta `9092` vem do mapeamento `9092:9092` do
-   `docker-compose.yaml` do guia oficial:
-
-   ```bash
-   cargo run -q -p kafcli -- context add eh-emu \
-     --brokers localhost:9092 \
-     --auth-type sasl-plain \
-     --username '$ConnectionString' \
-     --secret-ref env:KAFCLI_EH_EMU_CONNECTION \
-     --no-tls
-
-   cargo run -q -p kafcli -- context test eh-emu
-   ```
-
-   Fonte da porta e do usuário: <https://learn.microsoft.com/en-us/azure/event-hubs/test-locally-with-event-hub-emulator>
-   (seção "Using Kafka" e `docker-compose.yaml`).
-
-3. Rode o probe com `--topic eh1`, o event hub do `config.json` de exemplo do guia, e salve a
-   saída:
-
-   ```bash
-   cargo run -q -p kafcli --example capability_probe -- \
-     --context eh-emu \
-     --topic eh1 \
-     --output json > /tmp/kafcli-spike-results/emulator-probe.json
-   ```
-
-4. Quando terminar a avaliação, pare o emulador e remova os volumes dele:
-
-   ```bash
-   docker compose -f <caminho-do-docker-compose.yaml> down -v
-   ```
-
-**Limite do emulador.** O escritor do passo 5 não roda contra o emulador, porque o emulador não
-tem integração com o Schema Registry. O probe e o dump são a parte que pode ser testada.
-
-**Aviso:** o contexto `azure-connection-string` não serve para o emulador, porque ele força
-`SASL_SSL`, e o emulador aceita só `SASL_PLAINTEXT`. Use `sasl-plain` com `--no-tls`, como
-acima. Se o probe falhar, registre o erro exato em
-`/tmp/kafcli-spike-results/emulator-probe-notes.txt`.
-
-Para registrar a avaliação, anote no mesmo arquivo: versão da imagem, se o compose subiu, se
-o probe conectou e o erro exato.
-
-## 9. O que devolver para avaliação
+## 8. O que devolver para avaliação
 
 Devolva a pasta `/tmp/kafcli-spike-results/` inteira. Antes de enviar, confira que ela não tem
 connection string:
@@ -362,21 +256,28 @@ grep -ri "Endpoint=sb://" /tmp/kafcli-spike-results/
 
 Os dois comandos devem não imprimir nada. Se imprimirem algo, remova a linha antes de enviar.
 
-## 10. Limpeza
+## 9. Limpeza
 
-Apague o resource group, o que remove todos os recursos do spike (Standard e, se criado,
-Premium):
+Apague o resource group, o que remove todos os recursos do spike:
 
 ```bash
 az group delete --name "$KAFCLI_SPIKE_RG" --yes
-unset KAFCLI_EH_STD_CONNECTION KAFCLI_EH_PREM_CONNECTION KAFCLI_EH_EMU_CONNECTION
+unset KAFCLI_EH_STD_CONNECTION KAFCLI_EH_EMU_CONNECTION
 rm -rf "$HOME/kafcli-spike-venv"
 ```
 
-Os contextos `eh-std`, `eh-prem` e `eh-emu` continuam no arquivo de configuração do kafcli,
-apontando para hosts que já foram apagados; o CLI não tem `context remove`, então remova-os
-editando o `config.json` no diretório de configuração do kafcli (ou no caminho definido em
-`KAFCLI_CONFIG`).
+Se o emulador ainda estiver no ar (seção 7), derrube-o com o compose da pasta de fixtures. O
+compose interpola `ACCEPT_EULA` até no `down`, então a variável precisa estar definida; o valor
+`N` basta, porque o `down` não inicia o emulador:
+
+```bash
+ACCEPT_EULA=N docker compose -f tests/fixtures/eventhubs-emulator/compose.yaml down -v
+```
+
+Os contextos `eh-std` e, se você os criou no arquivo de configuração padrão, `eh-emu`
+continuam nesse arquivo, apontando para hosts que já foram apagados ou que param de existir.
+O CLI não tem `context remove`, então remova-os editando o `config.json` no diretório de
+configuração do kafcli (ou no caminho definido em `KAFCLI_CONFIG`).
 
 Fonte: <https://learn.microsoft.com/en-us/cli/azure/group> (`az group delete --name`,
 `--yes` para não pedir confirmação; `--no-wait` é opcional).

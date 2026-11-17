@@ -1,0 +1,28 @@
+# Emulador oficial do Azure Event Hubs com o Azurite que ele exige (ver README.md).
+#
+#   emulator  127.0.0.1:9092  endpoint Kafka (SASL_PLAINTEXT, PLAIN, usuário $ConnectionString)
+#   azurite   127.0.0.1:10000-10002  armazenamento usado pelo emulador
+#
+# O aceite da licença não tem valor padrão: ACCEPT_EULA=Y precisa vir da linha de comando.
+name: kafcli-eh-emulator
+
+services:
+  emulator:
+    image: mcr.microsoft.com/azure-messaging/eventhubs-emulator:2.2.1
+    volumes:
+      - ./Config.json:/Eventhubs_Emulator/ConfigFiles/Config.json
+    ports:
+      - "127.0.0.1:9092:9092"
+    environment:
+      BLOB_SERVER: azurite
+      METADATA_SERVER: azurite
+      ACCEPT_EULA: ${ACCEPT_EULA:?set ACCEPT_EULA=Y to accept the emulator license}
+    depends_on:
+      - azurite
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    ports:
+      - "127.0.0.1:10000:10000"
+      - "127.0.0.1:10001:10001"
+      - "127.0.0.1:10002:10002"
