@@ -836,3 +836,101 @@ fn help_lists_examples() {
             )));
     }
 }
+
+/// Writes a configuration by hand with a protected context whose registry is `registry_url`.
+/// `context add` would refuse these settings, so the file is the only way to reach the registry rules.
+fn write_protected_registry_config(directory: &Path, registry_url: &str, registry_auth: Value) {
+    let config = json!({
+        "current_context": "prd",
+        "contexts": {
+            "prd": {
+                "brokers": [CLOSED_BROKER],
+                "auth": {"type": "tls", "ca_location": null},
+                "protected": true,
+                "schema_registry": {
+                    "type": "confluent",
+                    "url": registry_url,
+                    "auth": registry_auth
+                }
+            }
+        }
+    });
+    std::fs::write(directory.join("config.json"), config.to_string()).unwrap();
+}
+
+const HTTP_REFUSED: &str = "schema registry over http:// is not allowed on a protected context";
+const ANONYMOUS_REFUSED: &str =
+    "schema registry auth type 'none' is not allowed on a protected context";
+
+#[test]
+fn schema_get_refuses_http_registry_on_protected_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    write_protected_registry_config(
+        directory.path(),
+        &registry.url(),
+        json!({"type": "basic", "username": "app", "secret_ref": "env:SR_PASSWORD"}),
+    );
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "get", "--subject", SUBJECT])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(HTTP_REFUSED));
+    assert!(registry.recorded_requests().is_empty());
+}
+
+#[test]
+fn schema_get_refuses_anonymous_registry_on_protected_https() {
+    let directory = tempfile::tempdir().unwrap();
+    // The fake speaks plain HTTP, so any request that reached it would be recorded even if it failed.
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    let https_url = registry.url().replacen("http://", "https://", 1);
+    write_protected_registry_config(directory.path(), &https_url, json!({"type": "none"}));
+
+    build_kafcli_command(directory.path())
+        .args(["schema", "get", "--subject", SUBJECT])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(ANONYMOUS_REFUSED));
+    assert!(registry.recorded_requests().is_empty());
+}
+
+#[test]
+fn produce_dry_run_refuses_http_registry_on_protected_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    write_protected_registry_config(
+        directory.path(),
+        &registry.url(),
+        json!({"type": "basic", "username": "app", "secret_ref": "env:SR_PASSWORD"}),
+    );
+
+    build_kafcli_command(directory.path())
+        .args(["produce", "--topic", "pedidos"])
+        .args(["--format", "avro", "--wire", "confluent"])
+        .args(["--schema-subject", SUBJECT, "--value", r#"{"id":1}"#])
+        .arg("--dry-run")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(HTTP_REFUSED));
+    assert!(registry.recorded_requests().is_empty());
+}
+
+#[test]
+fn produce_dry_run_refuses_anonymous_registry_on_protected_https() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = FakeRegistryServer::start(vec![]).unwrap();
+    let https_url = registry.url().replacen("http://", "https://", 1);
+    write_protected_registry_config(directory.path(), &https_url, json!({"type": "none"}));
+
+    build_kafcli_command(directory.path())
+        .args(["produce", "--topic", "pedidos"])
+        .args(["--format", "avro", "--wire", "confluent"])
+        .args(["--schema-subject", SUBJECT, "--value", r#"{"id":1}"#])
+        .arg("--dry-run")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(ANONYMOUS_REFUSED));
+    assert!(registry.recorded_requests().is_empty());
+}

@@ -2,6 +2,7 @@ use kafcli_core::codec::codec_selection::{
     DecoderSelection, EncoderSelection, ValueFormat, WireFormat, selection_needs_registry,
 };
 use kafcli_core::config::model::ConnectionContext;
+use kafcli_core::config::validation::validate_schema_registry;
 use kafcli_core::registry::registry_factory::build_schema_registry;
 use kafcli_core::registry::schema_registry::SchemaRegistry;
 use kafcli_core::secret::resolver::SecretResolver;
@@ -34,5 +35,7 @@ pub fn connect_schema_registry(
             "context '{context_name}' has no schema_registry; add one with 'kafcli context add ... --registry-type'"
         );
     };
+    // Checked here, not only by `context add`: a hand-edited context must not reach the registry.
+    validate_schema_registry(config, context.protected)?;
     Ok(build_schema_registry(config, resolver, timeout)?)
 }
