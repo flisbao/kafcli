@@ -1,6 +1,8 @@
 pub mod azure_connection_string_provider;
+pub mod bearer_provider;
 pub mod client_properties;
 pub mod mutual_tls_provider;
+pub mod oauth_bearer_settings;
 pub mod plaintext_provider;
 pub mod provider;
 pub mod provider_factory;

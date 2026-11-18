@@ -7,6 +7,9 @@ Três brokers Redpanda (`v25.3.18`) para os testes de conexão do `kafcli`.
 | `redpanda-plaintext` | 19092 | 19644 | nenhuma | — |
 | `redpanda-scram` | 29092 | 29644 | SASL_PLAINTEXT, SCRAM-SHA-256 | usuário `kafcli`, senha `kafcli-it-scram-secret` |
 | `redpanda-mtls` | 39092 | 39644 | TLS com certificado de cliente obrigatório | `certificates/` |
+| `kafka-oauth` | 49092 | — | SASL_PLAINTEXT, OAUTHBEARER (JWT sem assinatura, `alg: none`) | token em `KAFCLI_IT_BEARER_TOKEN`, gerado pelo próprio teste |
+
+`kafka-oauth` é um Apache Kafka 4.1.1 em KRaft com um nó só. O listener `EXTERNAL` não tem callback handler, então o broker usa o validador "unsecured": aceita qualquer JWT com `alg: none` e `exp`. Nunca use esse broker fora de testes.
 
 O serviço `redpanda-scram-bootstrap` cria o usuário `kafcli`, torna-o superusuário e liga o SASL no cluster SCRAM. Depois fica no ar (`sleep infinity`) e o healthcheck só passa quando o bootstrap termina; é nele que `up --wait` se baseia.
 
@@ -23,6 +26,16 @@ docker compose -f tests/fixtures/compose.yaml down -v
 ```
 
 O comando `down -v` remove os containers e os volumes; ele deve rodar mesmo quando os testes falham.
+
+## Testes OAuth
+
+Usam só o broker `kafka-oauth` (`127.0.0.1:49092`). Os testes criam um JWT `alg: none` com `sub` e `exp` próprios e criam e apagam os tópicos dentro do container.
+
+```bash
+docker compose -f tests/fixtures/compose.yaml up -d --wait kafka-oauth
+cargo test -p kafcli --test integration_oauth_cli bearer -- --ignored --test-threads=1
+docker compose -f tests/fixtures/compose.yaml down -v
+```
 
 ## Testes de produce e consume
 

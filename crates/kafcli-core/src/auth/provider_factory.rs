@@ -1,4 +1,5 @@
 use super::azure_connection_string_provider::AzureConnectionStringAuthProvider;
+use super::bearer_provider::BearerAuthProvider;
 use super::mutual_tls_provider::MutualTlsAuthProvider;
 use super::plaintext_provider::PlaintextAuthProvider;
 use super::provider::AuthProvider;
@@ -26,6 +27,7 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
         AuthConfig::AzureConnectionString(config) => {
             Box::new(AzureConnectionStringAuthProvider::new(config.clone()))
         }
+        AuthConfig::Bearer(config) => Box::new(BearerAuthProvider::new(config.clone())),
     }
 }
 
@@ -33,7 +35,8 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
 mod tests {
     use super::*;
     use crate::config::model::{
-        AzureConnectionStringConfig, MutualTlsAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
+        AzureConnectionStringConfig, BearerAuthConfig, MutualTlsAuthConfig, SaslCredentialsConfig,
+        TlsAuthConfig,
     };
     use crate::error::{CoreError, CoreResult};
     use crate::secret::fixed_resolver::FixedSecretResolver;
@@ -76,6 +79,14 @@ mod tests {
             (AuthConfig::SaslPlain(sasl_credentials()), "SASL_SSL"),
             (AuthConfig::SaslScram256(sasl_credentials()), "SASL_SSL"),
             (AuthConfig::SaslScram512(sasl_credentials()), "SASL_SSL"),
+            (
+                AuthConfig::Bearer(BearerAuthConfig {
+                    token_ref: "env:KAFCLI_IT_BEARER_TOKEN".parse().unwrap(),
+                    ca_location: None,
+                    use_tls: true,
+                }),
+                "SASL_SSL",
+            ),
             (
                 AuthConfig::AzureConnectionString(AzureConnectionStringConfig {
                     secret_ref: "env:AZURE".parse().unwrap(),

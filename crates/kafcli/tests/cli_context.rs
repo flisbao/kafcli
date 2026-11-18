@@ -595,3 +595,41 @@ fn list_marks_context_selected_by_environment_variable() {
     assert_eq!(is_current("prd"), Some(json!(true)));
     assert_eq!(is_current("dev"), Some(json!(false)));
 }
+
+#[test]
+fn add_bearer_context_requires_token_ref() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev-oauth", "--brokers", "kafka:9093"])
+        .args(["--auth-type", "bearer"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--auth-type bearer requires --token-ref",
+        ));
+}
+
+#[test]
+fn add_bearer_context_shows_token_reference() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev-oauth", "--brokers", "kafka:9093"])
+        .args(["--auth-type", "bearer", "--token-ref", "env:KAFKA_TOKEN"])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .env("KAFKA_TOKEN", "s3cret-token-value")
+        .args(["--output", "json", "context", "show", "dev-oauth"])
+        .assert()
+        .success();
+
+    let shown = parse_stdout_json(&assertion);
+    assert_eq!(
+        shown["data"]["secret_references"],
+        json!(["env:KAFKA_TOKEN"])
+    );
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    assert!(!stdout.contains("s3cret-token-value"));
+}

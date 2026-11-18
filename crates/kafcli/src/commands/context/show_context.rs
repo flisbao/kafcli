@@ -40,6 +40,7 @@ fn collect_secret_references(auth: &AuthConfig) -> Vec<String> {
         | AuthConfig::SaslScram256(credentials)
         | AuthConfig::SaslScram512(credentials) => vec![&credentials.secret_ref],
         AuthConfig::AzureConnectionString(config) => vec![&config.secret_ref],
+        AuthConfig::Bearer(config) => vec![&config.token_ref],
     };
     references.into_iter().map(ToString::to_string).collect()
 }

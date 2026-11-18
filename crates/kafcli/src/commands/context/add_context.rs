@@ -7,8 +7,8 @@ use crate::output::production_warning::warn_if_production;
 use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
-    AuthConfig, AzureConnectionStringConfig, ConnectionContext, MutualTlsAuthConfig,
-    SaslCredentialsConfig, TlsAuthConfig,
+    AuthConfig, AzureConnectionStringConfig, BearerAuthConfig, ConnectionContext,
+    MutualTlsAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
 };
 use kafcli_core::config::schema_registry_model::{
     AzureRegistryConfig, ConfluentRegistryConfig, RegistryAuthConfig, RegistryBasicAuthConfig,
@@ -93,7 +93,19 @@ fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConf
                 },
             ))
         }
+        AuthTypeArgument::Bearer => Ok(AuthConfig::Bearer(build_bearer_config(arguments)?)),
     }
+}
+
+fn build_bearer_config(arguments: &AddContextArguments) -> anyhow::Result<BearerAuthConfig> {
+    let Some(token_text) = arguments.token_ref.as_deref() else {
+        bail!("--auth-type bearer requires --token-ref");
+    };
+    Ok(BearerAuthConfig {
+        token_ref: parse_secret_reference(token_text, "--token-ref")?,
+        ca_location: arguments.ca_location.clone(),
+        use_tls: !arguments.no_tls,
+    })
 }
 
 /// Builds the Schema Registry of the context; `None` when no `--registry-*` flag is given.

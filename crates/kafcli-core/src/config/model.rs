@@ -43,6 +43,8 @@ pub enum AuthConfig {
     SaslScram512(SaslCredentialsConfig),
     #[serde(rename = "azure-connection-string")]
     AzureConnectionString(AzureConnectionStringConfig),
+    #[serde(rename = "bearer")]
+    Bearer(BearerAuthConfig),
 }
 
 impl AuthConfig {
@@ -56,6 +58,7 @@ impl AuthConfig {
             Self::SaslScram256(_) => "sasl-scram-256",
             Self::SaslScram512(_) => "sasl-scram-512",
             Self::AzureConnectionString(_) => "azure-connection-string",
+            Self::Bearer(_) => "bearer",
         }
     }
 }
@@ -92,6 +95,17 @@ pub struct AzureConnectionStringConfig {
     pub secret_ref: SecretReference,
 }
 
+/// OAUTHBEARER with a bearer token read from `token_ref`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BearerAuthConfig {
+    pub token_ref: SecretReference,
+    pub ca_location: Option<PathBuf>,
+    /// `false` selects SASL_PLAINTEXT, intended for local development only.
+    #[serde(default = "default_use_tls")]
+    pub use_tls: bool,
+}
+
 fn default_use_tls() -> bool {
     true
 }
@@ -110,5 +124,26 @@ mod tests {
         });
         assert_eq!(context_auth.type_name(), "sasl-scram-512");
         assert_eq!(AuthConfig::Plaintext.type_name(), "none");
+    }
+
+    #[test]
+    fn bearer_round_trips_through_json() {
+        let json =
+            r#"{"type":"bearer","token_ref":"env:KAFCLI_IT_BEARER_TOKEN","ca_location":null}"#;
+
+        let auth: AuthConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(auth.type_name(), "bearer");
+        assert!(matches!(&auth, AuthConfig::Bearer(config) if config.use_tls));
+        let written = serde_json::to_string(&auth).unwrap();
+        let reread: AuthConfig = serde_json::from_str(&written).unwrap();
+        assert_eq!(reread, auth);
+    }
+
+    #[test]
+    fn bearer_rejects_unknown_field() {
+        let json = r#"{"type":"bearer","token_ref":"env:TOKEN","surprise":true}"#;
+
+        assert!(serde_json::from_str::<AuthConfig>(json).is_err());
     }
 }

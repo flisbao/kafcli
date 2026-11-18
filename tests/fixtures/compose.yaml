@@ -3,6 +3,7 @@
 #   redpanda-plaintext  localhost:19092  no authentication; Schema Registry at localhost:18081
 #   redpanda-scram      localhost:29092  SASL_PLAINTEXT, SCRAM-SHA-256, user kafcli
 #   redpanda-mtls       localhost:39092  TLS with mandatory client certificates
+#   kafka-oauth         localhost:49092  SASL_PLAINTEXT, OAUTHBEARER (unsecured JWT, alg none)
 #
 # Each broker exposes its admin API on its own host port (19644, 29644, 39644).
 # The certificates for redpanda-mtls come from generate-certificates.sh.
@@ -90,6 +91,38 @@ services:
     ports:
       - "127.0.0.1:39092:39092"
       - "127.0.0.1:39644:9644"
+
+  # Apache Kafka in KRaft mode, one node. The EXTERNAL listener uses SASL_PLAINTEXT with OAUTHBEARER
+  # and no callback handler, so the broker falls back to the unsecured validator: it accepts any JWT
+  # with `alg: none` that carries an `exp` claim. Use it only for local tests.
+  # INTERNAL (PLAINTEXT, 9092) serves the controller and the healthcheck.
+  kafka-oauth:
+    image: apache/kafka:4.1.1
+    ports:
+      - "127.0.0.1:49092:49092"
+    environment:
+      KAFKA_CLUSTER_ID: "5L6g3nShT-eMCtK--X86sw"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_LISTENERS: "INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:49092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://localhost:9092,EXTERNAL://127.0.0.1:49092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:SASL_PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_ENABLED_MECHANISMS: "OAUTHBEARER"
+      KAFKA_LISTENER_NAME_EXTERNAL_OAUTHBEARER_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required unsecuredLoginStringClaim_sub="admin";'
+      KAFKA_CONNECTIONS_MAX_REAUTH_MS: "10000"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 2s
+      timeout: 10s
+      retries: 60
+      start_period: 10s
 
 configs:
   plaintext-broker-config:

@@ -1,4 +1,4 @@
-use crate::config::model::{AuthConfig, ConnectionContext, SaslCredentialsConfig};
+use crate::config::model::{AuthConfig, ConnectionContext};
 use crate::config::schema_registry_model::{
     AzureRegistryConfig, RegistryAuthConfig, SchemaRegistryConfig,
 };
@@ -36,7 +36,7 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
             "--insecure is not allowed on a protected context",
         ));
     }
-    if sasl_credentials_of(&context.auth).is_some_and(|credentials| !credentials.use_tls) {
+    if uses_plaintext_transport(&context.auth) {
         return Err(build_validation_error(
             "use_tls = false is not allowed on a protected context",
         ));
@@ -128,22 +128,24 @@ fn build_validation_error(message: &str) -> CoreError {
     CoreError::ContextValidation(message.to_string())
 }
 
-fn sasl_credentials_of(auth: &AuthConfig) -> Option<&SaslCredentialsConfig> {
+/// True when the mode lets the user turn TLS off (`use_tls = false`).
+fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
     match auth {
         AuthConfig::SaslPlain(credentials)
         | AuthConfig::SaslScram256(credentials)
-        | AuthConfig::SaslScram512(credentials) => Some(credentials),
+        | AuthConfig::SaslScram512(credentials) => !credentials.use_tls,
+        AuthConfig::Bearer(bearer) => !bearer.use_tls,
         AuthConfig::Plaintext
         | AuthConfig::Tls(_)
         | AuthConfig::MutualTls(_)
-        | AuthConfig::AzureConnectionString(_) => None,
+        | AuthConfig::AzureConnectionString(_) => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::TlsAuthConfig;
+    use crate::config::model::{BearerAuthConfig, SaslCredentialsConfig, TlsAuthConfig};
     use crate::config::schema_registry_model::{
         ConfluentRegistryConfig, RegistryBasicAuthConfig, RegistryBearerAuthConfig,
         RegistryMutualTlsConfig,
@@ -227,6 +229,27 @@ mod tests {
         let message = validation_message(validate_context(&blank_broker, false));
 
         assert_eq!(message, "context has an empty broker address");
+    }
+
+    #[test]
+    fn protected_bearer_without_tls_is_refused() {
+        let bearer = context(
+            AuthConfig::Bearer(BearerAuthConfig {
+                token_ref: "env:KAFCLI_IT_BEARER_TOKEN"
+                    .parse::<SecretReference>()
+                    .unwrap(),
+                ca_location: None,
+                use_tls: false,
+            }),
+            true,
+        );
+
+        let message = validation_message(validate_context(&bearer, false));
+
+        assert_eq!(
+            message,
+            "use_tls = false is not allowed on a protected context"
+        );
     }
 
     #[test]
