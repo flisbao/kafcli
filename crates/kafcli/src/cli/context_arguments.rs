@@ -15,7 +15,7 @@ pub enum ContextCommand {
     },
     /// Add a context to the configuration
     #[command(
-        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev-oauth --brokers kafka:9093 --auth-type bearer --token-ref file:/run/secrets/kafka-token\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
+        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev-oauth --brokers kafka:9093 --auth-type bearer --token-ref file:/run/secrets/kafka-token\n  kafcli context add ci-oidc --brokers kafka:9093 --auth-type oauth-oidc --token-endpoint-url https://login.example.com/oauth2/token --client-id kafcli --secret-ref env:KAFCLI_CLIENT_SECRET\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
     )]
     Add(Box<AddContextArguments>),
     /// Make a context the current one
@@ -55,12 +55,21 @@ pub struct AddContextArguments {
     /// SASL username (sasl-* auth types)
     #[arg(long)]
     pub username: Option<String>,
-    /// Secret reference such as env:VAR, file:/path or keyring:service/account
+    /// Secret reference such as env:VAR, file:/path or keyring:service/account; the client secret for oauth-oidc
     #[arg(long)]
     pub secret_ref: Option<String>,
     /// Secret reference of the bearer token (bearer auth type)
     #[arg(long)]
     pub token_ref: Option<String>,
+    /// Token endpoint of the OpenID Connect provider, https:// (oauth-oidc auth type)
+    #[arg(long)]
+    pub token_endpoint_url: Option<String>,
+    /// OAuth client id (oauth-oidc auth type)
+    #[arg(long)]
+    pub client_id: Option<String>,
+    /// OAuth scope requested with the token (oauth-oidc auth type)
+    #[arg(long)]
+    pub scope: Option<String>,
     /// CA certificate file used to verify the brokers
     #[arg(long)]
     pub ca_location: Option<PathBuf>,
@@ -140,6 +149,7 @@ pub enum AuthTypeArgument {
     SaslScram512,
     AzureConnectionString,
     Bearer,
+    OauthOidc,
 }
 
 impl AuthTypeArgument {
@@ -154,6 +164,7 @@ impl AuthTypeArgument {
             Self::SaslScram512 => "sasl-scram-512",
             Self::AzureConnectionString => "azure-connection-string",
             Self::Bearer => "bearer",
+            Self::OauthOidc => "oauth-oidc",
         }
     }
 }

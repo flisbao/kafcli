@@ -3,6 +3,7 @@ pub mod bearer_provider;
 pub mod client_properties;
 pub mod mutual_tls_provider;
 pub mod oauth_bearer_settings;
+pub mod oauth_oidc_provider;
 pub mod plaintext_provider;
 pub mod provider;
 pub mod provider_factory;

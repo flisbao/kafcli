@@ -45,6 +45,8 @@ pub enum AuthConfig {
     AzureConnectionString(AzureConnectionStringConfig),
     #[serde(rename = "bearer")]
     Bearer(BearerAuthConfig),
+    #[serde(rename = "oauth-oidc")]
+    OAuthOidc(OAuthOidcAuthConfig),
 }
 
 impl AuthConfig {
@@ -59,6 +61,7 @@ impl AuthConfig {
             Self::SaslScram512(_) => "sasl-scram-512",
             Self::AzureConnectionString(_) => "azure-connection-string",
             Self::Bearer(_) => "bearer",
+            Self::OAuthOidc(_) => "oauth-oidc",
         }
     }
 }
@@ -100,6 +103,22 @@ pub struct AzureConnectionStringConfig {
 #[serde(deny_unknown_fields)]
 pub struct BearerAuthConfig {
     pub token_ref: SecretReference,
+    pub ca_location: Option<PathBuf>,
+    /// `false` selects SASL_PLAINTEXT, intended for local development only.
+    #[serde(default = "default_use_tls")]
+    pub use_tls: bool,
+}
+
+/// OAUTHBEARER with a token that librdkafka fetches from an OpenID Connect token endpoint
+/// (client credentials grant) and refreshes on its own.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthOidcAuthConfig {
+    pub token_endpoint_url: String,
+    pub client_id: String,
+    /// Client secret. Only the reference is stored, never the value.
+    pub secret_ref: SecretReference,
+    pub scope: Option<String>,
     pub ca_location: Option<PathBuf>,
     /// `false` selects SASL_PLAINTEXT, intended for local development only.
     #[serde(default = "default_use_tls")]

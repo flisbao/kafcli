@@ -633,3 +633,47 @@ fn add_bearer_context_shows_token_reference() {
     let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
     assert!(!stdout.contains("s3cret-token-value"));
 }
+
+#[test]
+fn add_oidc_context_requires_all_flags() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev-oidc", "--brokers", "kafka:9093"])
+        .args(["--auth-type", "oauth-oidc"])
+        .args(["--token-endpoint-url", "https://idp.example/token"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--auth-type oauth-oidc requires --token-endpoint-url, --client-id and --secret-ref",
+        ));
+}
+
+#[test]
+fn oidc_show_lists_secret_reference_only() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["context", "add", "dev-oidc", "--brokers", "kafka:9093"])
+        .args(["--auth-type", "oauth-oidc"])
+        .args(["--token-endpoint-url", "https://idp.example/token"])
+        .args(["--client-id", "kafcli", "--scope", "kafka"])
+        .args(["--secret-ref", "env:KAFCLI_TEST_OIDC_SECRET"])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .env("KAFCLI_TEST_OIDC_SECRET", "s3cret-client-value")
+        .args(["--output", "json", "context", "show", "dev-oidc"])
+        .assert()
+        .success();
+
+    let shown = parse_stdout_json(&assertion);
+    assert_eq!(shown["data"]["auth_type"], json!("oauth-oidc"));
+    assert_eq!(shown["data"]["principal"], json!("kafcli"));
+    assert_eq!(
+        shown["data"]["secret_references"],
+        json!(["env:KAFCLI_TEST_OIDC_SECRET"])
+    );
+    let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
+    assert!(!stdout.contains("s3cret-client-value"));
+}

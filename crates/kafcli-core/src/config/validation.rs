@@ -1,4 +1,4 @@
-use crate::config::model::{AuthConfig, ConnectionContext};
+use crate::config::model::{AuthConfig, ConnectionContext, OAuthOidcAuthConfig};
 use crate::config::schema_registry_model::{
     AzureRegistryConfig, RegistryAuthConfig, SchemaRegistryConfig,
 };
@@ -22,6 +22,9 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
     }
     if let Some(schema_registry) = &context.schema_registry {
         validate_schema_registry(schema_registry, context.protected)?;
+    }
+    if let AuthConfig::OAuthOidc(oidc) = &context.auth {
+        validate_token_endpoint(oidc, context.protected)?;
     }
     if !context.protected {
         return Ok(());
@@ -79,6 +82,34 @@ fn validate_registry_url(url: &str) -> CoreResult<()> {
     Ok(())
 }
 
+/// The token endpoint must be HTTPS. Plain HTTP is accepted only where the context is not protected.
+fn validate_token_endpoint(config: &OAuthOidcAuthConfig, protected: bool) -> CoreResult<()> {
+    let url = config.token_endpoint_url.as_str();
+    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = after_scheme
+        .split_once('/')
+        .map_or(after_scheme, |(authority, _)| authority);
+    if authority.contains('@') {
+        return Err(build_validation_error(
+            "token_endpoint_url must not contain credentials",
+        ));
+    }
+    if is_https_url(url) {
+        return Ok(());
+    }
+    if !is_plain_http_url(url) {
+        return Err(build_validation_error(
+            "token_endpoint_url must start with https:// or http://",
+        ));
+    }
+    if protected {
+        return Err(build_validation_error(
+            "token_endpoint_url over http:// is not allowed on a protected context",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_azure_registry(azure: &AzureRegistryConfig) -> CoreResult<()> {
     if azure.group.trim().is_empty() {
         return Err(build_validation_error(
@@ -113,10 +144,12 @@ fn validate_protected_registry(config: &SchemaRegistryConfig) -> CoreResult<()> 
 }
 
 fn is_http_url(url: &str) -> bool {
-    is_plain_http_url(url)
-        || url
-            .get(..8)
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+    is_plain_http_url(url) || is_https_url(url)
+}
+
+fn is_https_url(url: &str) -> bool {
+    url.get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
 }
 
 fn is_plain_http_url(url: &str) -> bool {
@@ -135,6 +168,7 @@ fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
         | AuthConfig::SaslScram256(credentials)
         | AuthConfig::SaslScram512(credentials) => !credentials.use_tls,
         AuthConfig::Bearer(bearer) => !bearer.use_tls,
+        AuthConfig::OAuthOidc(oidc) => !oidc.use_tls,
         AuthConfig::Plaintext
         | AuthConfig::Tls(_)
         | AuthConfig::MutualTls(_)
@@ -145,7 +179,9 @@ fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::{BearerAuthConfig, SaslCredentialsConfig, TlsAuthConfig};
+    use crate::config::model::{
+        BearerAuthConfig, OAuthOidcAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
+    };
     use crate::config::schema_registry_model::{
         ConfluentRegistryConfig, RegistryBasicAuthConfig, RegistryBearerAuthConfig,
         RegistryMutualTlsConfig,
@@ -379,5 +415,85 @@ mod tests {
         let registry = confluent_registry("http://sr:8081", RegistryAuthConfig::Anonymous);
 
         assert!(validate_schema_registry(&registry, false).is_ok());
+    }
+
+    fn oidc_context(token_endpoint_url: &str, protected: bool) -> ConnectionContext {
+        context(
+            AuthConfig::OAuthOidc(OAuthOidcAuthConfig {
+                token_endpoint_url: token_endpoint_url.to_string(),
+                client_id: "kafcli".to_string(),
+                secret_ref: "env:KAFCLI_IT_OIDC_SECRET"
+                    .parse::<SecretReference>()
+                    .unwrap(),
+                scope: None,
+                ca_location: None,
+                use_tls: true,
+            }),
+            protected,
+        )
+    }
+
+    #[test]
+    fn protected_oidc_requires_https_endpoint() {
+        let message = validation_message(validate_context(
+            &oidc_context("http://idp.example/token", true),
+            false,
+        ));
+
+        assert_eq!(
+            message,
+            "token_endpoint_url over http:// is not allowed on a protected context"
+        );
+        assert!(validate_context(&oidc_context("https://idp.example/token", true), false).is_ok());
+    }
+
+    #[test]
+    fn unprotected_oidc_accepts_http_endpoint() {
+        assert!(
+            validate_context(&oidc_context("http://127.0.0.1:8080/token", false), false).is_ok()
+        );
+    }
+
+    #[test]
+    fn oidc_endpoint_must_use_http_or_https() {
+        let message = validation_message(validate_context(
+            &oidc_context("idp.example/token", false),
+            false,
+        ));
+
+        assert_eq!(
+            message,
+            "token_endpoint_url must start with https:// or http://"
+        );
+    }
+
+    #[test]
+    fn endpoint_with_credentials_is_refused() {
+        for url in [
+            "https://kafcli:s3cret@idp.example/token",
+            "http://kafcli:s3cret@127.0.0.1:8080/token",
+        ] {
+            let message = validation_message(validate_context(&oidc_context(url, false), false));
+
+            assert_eq!(
+                message, "token_endpoint_url must not contain credentials",
+                "url {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_oidc_without_tls_is_refused() {
+        let mut context = oidc_context("https://idp.example/token", true);
+        if let AuthConfig::OAuthOidc(config) = &mut context.auth {
+            config.use_tls = false;
+        }
+
+        let message = validation_message(validate_context(&context, false));
+
+        assert_eq!(
+            message,
+            "use_tls = false is not allowed on a protected context"
+        );
     }
 }

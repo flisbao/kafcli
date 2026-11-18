@@ -1,6 +1,7 @@
 use super::azure_connection_string_provider::AzureConnectionStringAuthProvider;
 use super::bearer_provider::BearerAuthProvider;
 use super::mutual_tls_provider::MutualTlsAuthProvider;
+use super::oauth_oidc_provider::OAuthOidcAuthProvider;
 use super::plaintext_provider::PlaintextAuthProvider;
 use super::provider::AuthProvider;
 use super::sasl_plain_provider::SaslPlainAuthProvider;
@@ -28,6 +29,7 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
             Box::new(AzureConnectionStringAuthProvider::new(config.clone()))
         }
         AuthConfig::Bearer(config) => Box::new(BearerAuthProvider::new(config.clone())),
+        AuthConfig::OAuthOidc(config) => Box::new(OAuthOidcAuthProvider::new(config.clone())),
     }
 }
 
@@ -35,8 +37,8 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
 mod tests {
     use super::*;
     use crate::config::model::{
-        AzureConnectionStringConfig, BearerAuthConfig, MutualTlsAuthConfig, SaslCredentialsConfig,
-        TlsAuthConfig,
+        AzureConnectionStringConfig, BearerAuthConfig, MutualTlsAuthConfig, OAuthOidcAuthConfig,
+        SaslCredentialsConfig, TlsAuthConfig,
     };
     use crate::error::{CoreError, CoreResult};
     use crate::secret::fixed_resolver::FixedSecretResolver;
@@ -82,6 +84,17 @@ mod tests {
             (
                 AuthConfig::Bearer(BearerAuthConfig {
                     token_ref: "env:KAFCLI_IT_BEARER_TOKEN".parse().unwrap(),
+                    ca_location: None,
+                    use_tls: true,
+                }),
+                "SASL_SSL",
+            ),
+            (
+                AuthConfig::OAuthOidc(OAuthOidcAuthConfig {
+                    token_endpoint_url: "https://idp.example/token".into(),
+                    client_id: "kafcli".into(),
+                    secret_ref: "env:KAFCLI_IT_OIDC_SECRET".parse().unwrap(),
+                    scope: None,
                     ca_location: None,
                     use_tls: true,
                 }),

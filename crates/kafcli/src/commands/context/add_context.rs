@@ -8,7 +8,7 @@ use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
     AuthConfig, AzureConnectionStringConfig, BearerAuthConfig, ConnectionContext,
-    MutualTlsAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
+    MutualTlsAuthConfig, OAuthOidcAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
 };
 use kafcli_core::config::schema_registry_model::{
     AzureRegistryConfig, ConfluentRegistryConfig, RegistryAuthConfig, RegistryBasicAuthConfig,
@@ -94,7 +94,28 @@ fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConf
             ))
         }
         AuthTypeArgument::Bearer => Ok(AuthConfig::Bearer(build_bearer_config(arguments)?)),
+        AuthTypeArgument::OauthOidc => {
+            Ok(AuthConfig::OAuthOidc(build_oauth_oidc_config(arguments)?))
+        }
     }
+}
+
+fn build_oauth_oidc_config(arguments: &AddContextArguments) -> anyhow::Result<OAuthOidcAuthConfig> {
+    let (Some(token_endpoint_url), Some(client_id), Some(secret_text)) = (
+        arguments.token_endpoint_url.clone(),
+        arguments.client_id.clone(),
+        arguments.secret_ref.as_deref(),
+    ) else {
+        bail!("--auth-type oauth-oidc requires --token-endpoint-url, --client-id and --secret-ref");
+    };
+    Ok(OAuthOidcAuthConfig {
+        token_endpoint_url,
+        client_id,
+        secret_ref: parse_secret_reference(secret_text, "--secret-ref")?,
+        scope: arguments.scope.clone(),
+        ca_location: arguments.ca_location.clone(),
+        use_tls: !arguments.no_tls,
+    })
 }
 
 fn build_bearer_config(arguments: &AddContextArguments) -> anyhow::Result<BearerAuthConfig> {

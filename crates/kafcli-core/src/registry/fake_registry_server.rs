@@ -14,6 +14,36 @@ pub struct FakeRoute {
     pub body: String,
 }
 
+/// Route whose status and body come from a closure on every request, for responses that must
+/// change between calls (for example a token that carries a fresh expiry).
+#[derive(Clone)]
+pub struct GeneratedFakeRoute {
+    pub method: String,
+    pub path_and_query: String,
+    pub headers: Vec<(String, String)>,
+    pub generator: Arc<dyn Fn() -> (u16, String) + Send + Sync>,
+}
+
+impl GeneratedFakeRoute {
+    pub fn new(
+        method: &str,
+        path_and_query: &str,
+        generator: Arc<dyn Fn() -> (u16, String) + Send + Sync>,
+    ) -> Self {
+        Self {
+            method: method.to_string(),
+            path_and_query: path_and_query.to_string(),
+            headers: Vec::new(),
+            generator,
+        }
+    }
+
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+}
+
 /// Request seen by the fake server.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordedRequest {
@@ -33,6 +63,15 @@ pub struct FakeRegistryServer {
 
 impl FakeRegistryServer {
     pub fn start(routes: Vec<FakeRoute>) -> io::Result<Self> {
+        Self::start_with_generated(routes, Vec::new())
+    }
+
+    /// Like `start`, and also answers the generated routes. A generated route wins over a fixed
+    /// route with the same method and path.
+    pub fn start_with_generated(
+        routes: Vec<FakeRoute>,
+        generated: Vec<GeneratedFakeRoute>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
         let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -40,7 +79,7 @@ impl FakeRegistryServer {
         let worker = {
             let recorded = Arc::clone(&recorded);
             let stopping = Arc::clone(&stopping);
-            std::thread::spawn(move || serve(listener, &routes, &recorded, &stopping))
+            std::thread::spawn(move || serve(listener, &routes, &generated, &recorded, &stopping))
         };
         Ok(Self {
             address,
@@ -76,6 +115,7 @@ impl Drop for FakeRegistryServer {
 fn serve(
     listener: TcpListener,
     routes: &[FakeRoute],
+    generated: &[GeneratedFakeRoute],
     recorded: &Mutex<Vec<RecordedRequest>>,
     stopping: &AtomicBool,
 ) {
@@ -84,7 +124,7 @@ fn serve(
             break;
         }
         if let Ok(stream) = stream {
-            let _ = handle_connection(stream, routes, recorded);
+            let _ = handle_connection(stream, routes, generated, recorded);
         }
     }
 }
@@ -92,6 +132,7 @@ fn serve(
 fn handle_connection(
     stream: TcpStream,
     routes: &[FakeRoute],
+    generated: &[GeneratedFakeRoute],
     recorded: &Mutex<Vec<RecordedRequest>>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -125,16 +166,25 @@ fn handle_connection(
     reader.read_exact(&mut body_bytes)?;
     let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
-    let (status, response_headers, response_body) = match routes
+    let (status, response_headers, response_body) = match generated
         .iter()
         .find(|route| route.method == method && route.path_and_query == path)
     {
-        Some(route) => (route.status, route.headers.clone(), route.body.clone()),
-        None => (
-            404,
-            Vec::new(),
-            r#"{"error_code":40400,"message":"no fake route"}"#.to_string(),
-        ),
+        Some(route) => {
+            let (status, body) = (route.generator)();
+            (status, route.headers.clone(), body)
+        }
+        None => match routes
+            .iter()
+            .find(|route| route.method == method && route.path_and_query == path)
+        {
+            Some(route) => (route.status, route.headers.clone(), route.body.clone()),
+            None => (
+                404,
+                Vec::new(),
+                r#"{"error_code":40400,"message":"no fake route"}"#.to_string(),
+            ),
+        },
     };
     recorded
         .lock()
