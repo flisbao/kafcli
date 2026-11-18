@@ -1,9 +1,10 @@
 use crate::auth::provider_factory::create_auth_provider;
 use crate::config::model::ConnectionContext;
-use crate::connection::client_config_builder::{ConnectionSettings, build_client_config};
+use crate::connection::client_config_builder::ConnectionSettings;
+use crate::connection::kafka_connection::build_kafka_connection;
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::consumer::Consumer;
 use serde::Serialize;
 use std::time::Duration;
 
@@ -26,8 +27,8 @@ pub fn probe_context_connection(
     settings: &ConnectionSettings,
     timeout: Duration,
 ) -> CoreResult<ConnectionReport> {
-    let client_config = build_client_config(context, resolver, settings)?;
-    let consumer: BaseConsumer = client_config.create().map_err(map_kafka_error)?;
+    let connection = build_kafka_connection(context, resolver, settings)?;
+    let consumer = connection.create_consumer(connection.client_config().clone())?;
     let metadata = consumer
         .fetch_metadata(None, timeout)
         .map_err(map_kafka_error)?;

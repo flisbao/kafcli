@@ -1,8 +1,9 @@
 use crate::config::model::ConnectionContext;
-use crate::connection::client_config_builder::{ConnectionSettings, build_client_config};
+use crate::connection::client_config_builder::ConnectionSettings;
+use crate::connection::kafka_client_context::KafkaClientContext;
+use crate::connection::kafka_connection::{KafkaConnection, build_kafka_connection};
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
-use rdkafka::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
 use rdkafka::message::{BorrowedMessage, Headers, Message};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
@@ -49,9 +50,9 @@ pub fn dump_topic_messages(
     maximum_messages: usize,
     timeout: Duration,
 ) -> CoreResult<Vec<MessageDump>> {
-    let base_config = build_client_config(context, resolver, settings)?;
+    let connection = build_kafka_connection(context, resolver, settings)?;
     let group_id = format!("{DUMP_GROUP_PREFIX}{}", to_unix_millis(SystemTime::now()));
-    let consumer = create_dump_consumer(base_config, &group_id)?;
+    let consumer = create_dump_consumer(&connection, &group_id)?;
 
     let partitions = fetch_partition_identifiers(&consumer, topic, timeout)?;
     let mut assignment = TopicPartitionList::new();
@@ -101,14 +102,17 @@ fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn create_dump_consumer(base_config: ClientConfig, group_id: &str) -> CoreResult<BaseConsumer> {
-    let mut config = base_config;
+fn create_dump_consumer(
+    connection: &KafkaConnection,
+    group_id: &str,
+) -> CoreResult<BaseConsumer<KafkaClientContext>> {
+    let mut config = connection.client_config().clone();
     // Missing topics must never be created by a metadata fetch or a consumer.
     config.set("allow.auto.create.topics", "false");
     config.set("enable.auto.commit", "false");
     // librdkafka rejects `assign` without a group id; the group is never committed to.
     config.set("group.id", group_id);
-    config.create().map_err(map_kafka_error)
+    connection.create_consumer(config)
 }
 
 pub(crate) fn fetch_partition_identifiers<C: ConsumerContext>(

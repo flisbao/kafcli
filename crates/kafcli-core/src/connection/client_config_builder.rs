@@ -19,7 +19,7 @@ pub struct ConnectionSettings {
 /// Builds the librdkafka configuration for `context`.
 ///
 /// Insecure overrides are applied last so they win over the provider's TLS properties.
-pub fn build_client_config(
+pub(crate) fn build_client_config(
     context: &ConnectionContext,
     resolver: &dyn SecretResolver,
     settings: &ConnectionSettings,

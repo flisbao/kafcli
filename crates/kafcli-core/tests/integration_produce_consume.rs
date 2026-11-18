@@ -7,7 +7,8 @@
 
 use kafcli_core::codec::raw_json_codec::RawJsonCodec;
 use kafcli_core::config::model::{AuthConfig, ConnectionContext};
-use kafcli_core::connection::client_config_builder::{ConnectionSettings, build_client_config};
+use kafcli_core::connection::client_config_builder::ConnectionSettings;
+use kafcli_core::connection::kafka_connection::build_kafka_connection;
 use kafcli_core::error::{CoreError, CoreResult};
 use kafcli_core::message::binary_text::decode_base64;
 use kafcli_core::message::message_envelope::MessageEnvelope;
@@ -252,13 +253,13 @@ fn json_value(index: usize) -> Vec<u8> {
 
 /// Produces `values` to one partition with the given create time, in milliseconds since the epoch.
 fn produce_with_timestamp(topic: &str, partition: i32, timestamp_millis: i64, values: &[Vec<u8>]) {
-    let config = build_client_config(
+    let connection = build_kafka_connection(
         &plaintext_context(),
         &FixedSecretResolver::returning("unused"),
         &ConnectionSettings { insecure: false },
     )
     .unwrap();
-    let producer: BaseProducer = config.create().unwrap();
+    let producer: BaseProducer = connection.client_config().clone().create().unwrap();
     for value in values {
         producer
             .send(
@@ -282,12 +283,13 @@ fn offsets_of(envelopes: &[MessageEnvelope]) -> Vec<i64> {
 
 /// Committed offsets of `group_id` for `partitions` of `topic`, using a fresh consumer in that group.
 fn committed_offsets_of(group_id: &str, topic: &str, partitions: &[i32]) -> Vec<Offset> {
-    let mut config = build_client_config(
+    let connection = build_kafka_connection(
         &plaintext_context(),
         &FixedSecretResolver::returning("unused"),
         &ConnectionSettings { insecure: false },
     )
     .unwrap();
+    let mut config = connection.client_config().clone();
     config.set("group.id", group_id);
     config.set("enable.auto.commit", "false");
     let consumer: BaseConsumer = config.create().unwrap();

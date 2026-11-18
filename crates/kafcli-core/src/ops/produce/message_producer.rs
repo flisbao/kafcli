@@ -1,7 +1,9 @@
 use crate::capability::broker_capabilities::{detect_broker_family, resolve_producer_tuning};
 use crate::codec::value_codec::ValueEncoder;
 use crate::config::model::ConnectionContext;
-use crate::connection::client_config_builder::{ConnectionSettings, build_client_config};
+use crate::connection::client_config_builder::ConnectionSettings;
+use crate::connection::kafka_connection::{KafkaConnection, build_kafka_connection};
+use crate::connection::oauth_token_refresher::OAuthTokenRefresher;
 use crate::error::{CoreError, CoreResult};
 use crate::message::binary_text::decode_base64;
 use crate::message::message_envelope::MessageEnvelope;
@@ -14,8 +16,8 @@ use crate::template::{
     EnvironmentLookup, TemplateState, render_text_template, render_value_templates,
 };
 use rdkafka::ClientConfig;
-use rdkafka::client::ClientContext;
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::client::{ClientContext, OAuthToken};
+use rdkafka::consumer::Consumer;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::message::{DeliveryResult, Header, Message, OwnedHeaders, Timestamp};
 use rdkafka::producer::{BaseProducer, BaseRecord, Producer, ProducerContext};
@@ -177,14 +179,23 @@ pub fn produce_messages(
     messages: Vec<PreparedMessage>,
 ) -> CoreResult<ProduceReport> {
     let tuning = resolve_producer_tuning(detect_broker_family(context));
-    let base_config = build_client_config(context, resolver, settings)?;
-    ensure_topic_exists(&base_config, &options.topic, options.timeout)?;
+    let connection = build_kafka_connection(context, resolver, settings)?;
+    ensure_topic_exists(&connection, &options.topic, options.timeout)?;
 
     let (sender, receiver) = mpsc::channel();
-    let producer: BaseProducer<ProduceDeliveryContext> =
-        build_producer_config(&base_config, tuning.compression_disabled, options.timeout)
-            .create_with_context(ProduceDeliveryContext { deliveries: sender })
-            .map_err(map_kafka_error)?;
+    let producer: BaseProducer<ProduceDeliveryContext> = build_producer_config(
+        connection.client_config(),
+        tuning.compression_disabled,
+        options.timeout,
+    )
+    .create_with_context(ProduceDeliveryContext {
+        deliveries: sender,
+        refresher: connection.refresher().clone(),
+    })
+    .map_err(map_kafka_error)?;
+    connection.wait_for_initial_token(|timeout| {
+        producer.poll(timeout);
+    })?;
 
     let mut tally = DeliveryTally::default();
     let mut progress = ProgressClock::new(Instant::now(), options.timeout);
@@ -372,9 +383,19 @@ struct ResolvedEnvelopeValue<'e> {
 /// Forwards each delivery report to the producer loop, which reads them after polling.
 struct ProduceDeliveryContext {
     deliveries: Sender<Result<DeliveryReport, String>>,
+    refresher: OAuthTokenRefresher,
 }
 
-impl ClientContext for ProduceDeliveryContext {}
+impl ClientContext for ProduceDeliveryContext {
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    fn generate_oauth_token(
+        &self,
+        _oauthbearer_config: Option<&str>,
+    ) -> Result<OAuthToken, Box<dyn std::error::Error>> {
+        self.refresher.generate_kafka_token()
+    }
+}
 
 impl ProducerContext for ProduceDeliveryContext {
     type DeliveryOpaque = ();
@@ -456,13 +477,13 @@ impl DeliveryTally {
 }
 
 fn ensure_topic_exists(
-    base_config: &ClientConfig,
+    connection: &KafkaConnection,
     topic: &str,
     timeout: Duration,
 ) -> CoreResult<()> {
-    let mut config = base_config.clone();
+    let mut config = connection.client_config().clone();
     config.set("allow.auto.create.topics", "false");
-    let consumer: BaseConsumer = config.create().map_err(map_kafka_error)?;
+    let consumer = connection.create_consumer(config)?;
     let metadata = consumer
         .fetch_metadata(Some(topic), timeout)
         .map_err(map_kafka_error)?;

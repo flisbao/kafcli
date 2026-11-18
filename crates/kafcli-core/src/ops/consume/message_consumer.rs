@@ -8,7 +8,8 @@
 use crate::capability::message_dump::fetch_partition_identifiers;
 use crate::codec::value_codec::ValueDecoder;
 use crate::config::model::ConnectionContext;
-use crate::connection::client_config_builder::{ConnectionSettings, build_client_config};
+use crate::connection::client_config_builder::ConnectionSettings;
+use crate::connection::kafka_connection::{KafkaConnection, build_kafka_connection};
 use crate::error::{CoreError, CoreResult};
 use crate::message::message_envelope::{EnvelopeValue, MessageEnvelope};
 use crate::message::record_header::RecordHeader;
@@ -78,11 +79,11 @@ pub fn consume_messages(
     sink: &mut dyn EnvelopeSink,
 ) -> CoreResult<ConsumeSummary> {
     validate_options(options)?;
-    let base_config = build_client_config(context, resolver, settings)?;
+    let connection = build_kafka_connection(context, resolver, settings)?;
     let mut run = ConsumeRun::new(options, decoder, sink);
     match &options.group {
         Some(group) => {
-            let consumer = create_subscribe_consumer(base_config, group, options.start)?;
+            let consumer = create_subscribe_consumer(&connection, group, options.start)?;
             fetch_partition_identifiers(&consumer, &options.topic, options.timeout)?;
             consumer
                 .subscribe(&[options.topic.as_str()])
@@ -95,7 +96,7 @@ pub fn consume_messages(
                 "{CONSUME_GROUP_PREFIX}{}",
                 to_unix_millis(SystemTime::now())
             );
-            let consumer = create_assign_consumer(base_config, &group_id)?;
+            let consumer = create_assign_consumer(&connection, &group_id)?;
             run.assign_partitions(&consumer)?;
             run.read_until_done(&consumer, false)?;
             Ok(run.summary(group_id))
@@ -449,26 +450,37 @@ fn clamp_explicit_offset(requested: i64, low: i64, high: i64) -> (Offset, i64) {
 }
 
 fn create_assign_consumer(
-    base_config: ClientConfig,
+    connection: &KafkaConnection,
     group_id: &str,
 ) -> CoreResult<ConsumeConsumer> {
-    let mut config = apply_common_settings(base_config, group_id);
+    let mut config = apply_common_settings(connection.client_config().clone(), group_id);
     // Assignment never commits: the group id exists only because librdkafka requires one.
     config.set("enable.auto.commit", "false");
     config.set("enable.auto.offset.store", "false");
-    config
-        .create_with_context(ConsumeClientContext)
-        .map_err(map_kafka_error)
+    create_consume_consumer(connection, config)
 }
 
 fn create_subscribe_consumer(
-    base_config: ClientConfig,
+    connection: &KafkaConnection,
     group_id: &str,
     start: StartPosition,
 ) -> CoreResult<ConsumeConsumer> {
-    build_subscribe_config(base_config, group_id, start)
-        .create_with_context(ConsumeClientContext)
-        .map_err(map_kafka_error)
+    let config = build_subscribe_config(connection.client_config().clone(), group_id, start);
+    create_consume_consumer(connection, config)
+}
+
+/// Creates a consumer in `config` and waits for its first token when there is a token source.
+fn create_consume_consumer(
+    connection: &KafkaConnection,
+    config: ClientConfig,
+) -> CoreResult<ConsumeConsumer> {
+    let consumer: ConsumeConsumer = config
+        .create_with_context(ConsumeClientContext::new(connection.refresher().clone()))
+        .map_err(map_kafka_error)?;
+    connection.wait_for_initial_token(|timeout| {
+        consumer.poll(timeout);
+    })?;
+    Ok(consumer)
 }
 
 fn build_subscribe_config(

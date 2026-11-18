@@ -3,11 +3,14 @@ use crate::capability::capability_report::{
 };
 use crate::capability::error_classification::classify_kafka_error;
 use crate::config::model::ConnectionContext;
-use crate::connection::client_config_builder::{ConnectionSettings, build_client_config};
+use crate::connection::client_config_builder::ConnectionSettings;
+use crate::connection::kafka_client_context::KafkaClientContext;
+use crate::connection::kafka_connection::{KafkaConnection, build_kafka_connection};
+use crate::connection::oauth_token_refresher::OAuthTokenRefresher;
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
 use rdkafka::ClientConfig;
-use rdkafka::client::ClientContext;
+use rdkafka::client::{ClientContext, OAuthToken};
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer};
 use rdkafka::error::{KafkaError, KafkaResult, RDKafkaErrorCode};
 use rdkafka::message::{BorrowedMessage, DeliveryResult, Header, Headers, Message, OwnedHeaders};
@@ -49,9 +52,19 @@ type DeliveryOutcome = Result<i64, CapabilityOutcome>;
 /// Forwards each delivery report to the probe, which reads them after flushing.
 struct ProbeProducerContext {
     deliveries: Sender<DeliveryOutcome>,
+    refresher: OAuthTokenRefresher,
 }
 
-impl ClientContext for ProbeProducerContext {}
+impl ClientContext for ProbeProducerContext {
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    fn generate_oauth_token(
+        &self,
+        _oauthbearer_config: Option<&str>,
+    ) -> Result<OAuthToken, Box<dyn std::error::Error>> {
+        self.refresher.generate_kafka_token()
+    }
+}
 
 impl ProducerContext for ProbeProducerContext {
     type DeliveryOpaque = ();
@@ -77,10 +90,10 @@ pub fn probe_capabilities(
     settings: &ConnectionSettings,
     options: &ProbeOptions,
 ) -> CoreResult<CapabilityReport> {
-    let base_config = build_client_config(context, resolver, settings)?;
+    let connection = build_kafka_connection(context, resolver, settings)?;
     let run_identifier = build_run_identifier(SystemTime::now());
     let session = ProbeSession {
-        base_config,
+        connection,
         topic: &options.topic,
         timeout: options.timeout,
         run_identifier: &run_identifier,
@@ -180,7 +193,7 @@ fn is_membership_rejection(code: RDKafkaErrorCode) -> bool {
 }
 
 struct ProbeSession<'a> {
-    base_config: ClientConfig,
+    connection: KafkaConnection,
     topic: &'a str,
     timeout: Duration,
     run_identifier: &'a str,
@@ -189,7 +202,7 @@ struct ProbeSession<'a> {
 
 impl ProbeSession<'_> {
     fn build_guarded_config(&self) -> ClientConfig {
-        let mut config = self.base_config.clone();
+        let mut config = self.connection.client_config().clone();
         // Missing topics must never be created by a metadata fetch, a consumer or a producer.
         config.set("allow.auto.create.topics", "false");
         config
@@ -212,10 +225,9 @@ impl ProbeSession<'_> {
     }
 
     fn fetch_topic_metadata(&self) -> CoreResult<TopicMetadataSummary> {
-        let consumer: BaseConsumer = self
-            .build_consumer_config(None)
-            .create()
-            .map_err(map_kafka_error)?;
+        let consumer = self
+            .connection
+            .create_consumer(self.build_consumer_config(None))?;
         let metadata = consumer
             .fetch_metadata(Some(self.topic), self.timeout)
             .map_err(map_kafka_error)?;
@@ -235,11 +247,18 @@ impl ProbeSession<'_> {
         let (sender, receiver) = mpsc::channel();
         let producer: BaseProducer<ProbeProducerContext> = match self
             .build_producer_config()
-            .create_with_context(ProbeProducerContext { deliveries: sender })
-        {
+            .create_with_context(ProbeProducerContext {
+                deliveries: sender,
+                refresher: self.connection.refresher().clone(),
+            }) {
             Ok(producer) => producer,
             Err(error) => return (classify_kafka_error(&error), None),
         };
+        if let Err(error) = self.connection.wait_for_initial_token(|timeout| {
+            producer.poll(timeout);
+        }) {
+            return (classify_kafka_error(&to_client_creation_error(error)), None);
+        }
 
         let send_timestamp_millis = to_unix_millis(SystemTime::now());
         for index in 0..PROBE_MESSAGE_COUNT {
@@ -302,9 +321,10 @@ impl ProbeSession<'_> {
         };
         // librdkafka rejects `assign` without a group id, so the probe group is used. It only
         // assigns here and never commits, so no offset is written for it.
-        let consumer: BaseConsumer = self
-            .build_consumer_config(Some(self.probe_group.as_str()))
-            .create()?;
+        let consumer = create_probe_consumer(
+            &self.connection,
+            self.build_consumer_config(Some(self.probe_group.as_str())),
+        )?;
         consumer.assign(&build_partition_list(self.topic, first_offset)?)?;
 
         let deadline = Instant::now() + self.timeout;
@@ -336,7 +356,7 @@ impl ProbeSession<'_> {
     }
 
     fn check_list_offsets(&self) -> KafkaResult<CapabilityOutcome> {
-        let consumer: BaseConsumer = self.build_consumer_config(None).create()?;
+        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
         let (low, high) = consumer.fetch_watermarks(self.topic, PROBE_PARTITION, self.timeout)?;
         Ok(CapabilityOutcome::Supported {
             detail: Some(format!("low={low} high={high}")),
@@ -350,7 +370,7 @@ impl ProbeSession<'_> {
         let Some(batch) = batch else {
             return Ok(build_missing_batch_outcome());
         };
-        let consumer: BaseConsumer = self.build_consumer_config(None).create()?;
+        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
         let lookup_millis = batch.send_timestamp_millis - TIMESTAMP_LOOKUP_SKEW_MILLIS;
         let mut query = TopicPartitionList::new();
         query.add_partition_offset(self.topic, PROBE_PARTITION, Offset::Offset(lookup_millis))?;
@@ -402,9 +422,10 @@ impl ProbeSession<'_> {
         let Some(first_offset) = first_offset else {
             return Ok(build_missing_batch_outcome());
         };
-        let consumer: BaseConsumer = self
-            .build_consumer_config(Some(self.probe_group.as_str()))
-            .create()?;
+        let consumer = create_probe_consumer(
+            &self.connection,
+            self.build_consumer_config(Some(self.probe_group.as_str())),
+        )?;
         let committed = consumer.committed_offsets(
             build_partition_list(self.topic, first_offset)?,
             self.timeout,
@@ -424,7 +445,7 @@ impl ProbeSession<'_> {
     }
 
     fn check_list_groups(&self) -> KafkaResult<CapabilityOutcome> {
-        let consumer: BaseConsumer = self.build_consumer_config(None).create()?;
+        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
         let groups = consumer.fetch_group_list(None, self.timeout)?;
         let listed = groups
             .groups()
@@ -437,7 +458,7 @@ impl ProbeSession<'_> {
     }
 
     fn check_describe_group(&self) -> KafkaResult<CapabilityOutcome> {
-        let consumer: BaseConsumer = self.build_consumer_config(None).create()?;
+        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
         let groups = consumer.fetch_group_list(Some(self.probe_group.as_str()), self.timeout)?;
         let outcome = match groups
             .groups()
@@ -463,9 +484,10 @@ impl ProbeSession<'_> {
         committed_offset: i64,
     ) -> KafkaResult<CapabilityOutcome> {
         let active_group = format!("{}{ACTIVE_GROUP_SUFFIX}", self.probe_group);
-        let member: BaseConsumer = self
-            .build_consumer_config(Some(active_group.as_str()))
-            .create()?;
+        let member = create_probe_consumer(
+            &self.connection,
+            self.build_consumer_config(Some(active_group.as_str())),
+        )?;
         member.subscribe(&[self.topic])?;
         if !self.wait_for_assignment(&member)? {
             return Ok(CapabilityOutcome::Failed {
@@ -497,11 +519,17 @@ impl ProbeSession<'_> {
         committed_offset: i64,
     ) -> Option<KafkaResult<()>> {
         let config = self.build_consumer_config(Some(group_id));
+        let connection = self.connection.clone();
         let topic = self.topic.to_string();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let outcome =
-                commit_offset_in_group(&config, &topic, assigned_offset, committed_offset);
+            let outcome = commit_offset_in_group(
+                &connection,
+                config,
+                &topic,
+                assigned_offset,
+                committed_offset,
+            );
             // The receiver stops waiting after the timeout, so a failed send is harmless.
             let _ = sender.send(outcome);
         });
@@ -518,7 +546,7 @@ impl ProbeSession<'_> {
     }
 
     /// Polls `member` until it holds a partition, returning `false` when the timeout ends first.
-    fn wait_for_assignment(&self, member: &BaseConsumer) -> KafkaResult<bool> {
+    fn wait_for_assignment(&self, member: &BaseConsumer<KafkaClientContext>) -> KafkaResult<bool> {
         let deadline = Instant::now() + self.timeout;
         while Instant::now() < deadline {
             if let Some(received) = member.poll(POLL_SLICE) {
@@ -534,17 +562,38 @@ impl ProbeSession<'_> {
 
 /// Creates a consumer in `config`, assigns `assigned_offset` and commits `committed_offset` synchronously.
 fn commit_offset_in_group(
-    config: &ClientConfig,
+    connection: &KafkaConnection,
+    config: ClientConfig,
     topic: &str,
     assigned_offset: i64,
     committed_offset: i64,
 ) -> KafkaResult<()> {
-    let consumer: BaseConsumer = config.create()?;
+    let consumer = create_probe_consumer(connection, config)?;
     consumer.assign(&build_partition_list(topic, assigned_offset)?)?;
     consumer.commit(
         &build_partition_list(topic, committed_offset)?,
         CommitMode::Sync,
     )
+}
+
+/// Creates a consumer with the connection's refresher and waits for its first token. The
+/// `KafkaError` type is kept so that error codes still classify the check.
+fn create_probe_consumer(
+    connection: &KafkaConnection,
+    config: ClientConfig,
+) -> KafkaResult<BaseConsumer<KafkaClientContext>> {
+    let consumer: BaseConsumer<KafkaClientContext> =
+        config.create_with_context(KafkaClientContext::new(connection.refresher().clone()))?;
+    connection
+        .wait_for_initial_token(|timeout| {
+            consumer.poll(timeout);
+        })
+        .map_err(to_client_creation_error)?;
+    Ok(consumer)
+}
+
+fn to_client_creation_error(error: CoreError) -> KafkaError {
+    KafkaError::ClientCreation(error.to_string())
 }
 
 /// Runs one check, turning a Kafka error into the outcome for that check.
