@@ -16,6 +16,20 @@ pub struct Configuration {
     pub current_context: Option<String>,
     #[serde(default)]
     pub contexts: BTreeMap<String, ConnectionContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups_audit: Option<GroupsAuditConfig>,
+}
+
+/// Settings of `kafcli groups audit`; flags of the same name override them.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupsAuditConfig {
+    /// Regex over the client id whose `service` group (or first group) names the member's service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_pattern: Option<String>,
+    /// Regex every group name must match (rule R5); R5 is off without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name_pattern: Option<String>,
 }
 
 /// A named Kafka cluster connection.

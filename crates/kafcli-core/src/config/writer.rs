@@ -31,7 +31,9 @@ pub fn save_configuration(config_path: &Path, configuration: &Configuration) -> 
 mod tests {
     use super::*;
     use crate::config::loader::load_configuration;
-    use crate::config::model::{AuthConfig, ConnectionContext, SaslCredentialsConfig};
+    use crate::config::model::{
+        AuthConfig, ConnectionContext, GroupsAuditConfig, SaslCredentialsConfig,
+    };
     use crate::secret::reference::SecretReference;
     use std::collections::BTreeMap;
 
@@ -59,7 +61,40 @@ mod tests {
                 ("local".to_string(), local_context),
                 ("prd".to_string(), secured_context),
             ]),
+            groups_audit: None,
         }
+    }
+
+    #[test]
+    fn groups_audit_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.json");
+        let mut configuration = sample_configuration();
+        configuration.groups_audit = Some(GroupsAuditConfig {
+            service_pattern: Some(r"^(?P<service>[a-z-]+)-\d+$".to_string()),
+            group_name_pattern: None,
+        });
+
+        save_configuration(&config_path, &configuration).unwrap();
+
+        assert_eq!(load_configuration(&config_path).unwrap(), configuration);
+        let written = fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("groups_audit"), "{written}");
+        assert!(!written.contains("group_name_pattern"), "{written}");
+    }
+
+    #[test]
+    fn configuration_without_groups_audit_writes_no_field() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.json");
+
+        save_configuration(&config_path, &sample_configuration()).unwrap();
+
+        assert!(
+            !fs::read_to_string(&config_path)
+                .unwrap()
+                .contains("groups_audit")
+        );
     }
 
     #[test]

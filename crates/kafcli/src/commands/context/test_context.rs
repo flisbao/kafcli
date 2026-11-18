@@ -66,6 +66,7 @@ mod tests {
                     schema_registry: None,
                 },
             )]),
+            groups_audit: None,
         };
         save_configuration(&config_path, &configuration).unwrap();
         let execution = ExecutionContext {

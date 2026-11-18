@@ -1583,6 +1583,7 @@ dependencies = [
  "kafcli-core",
  "keyring",
  "rdkafka",
+ "regex",
  "reqwest",
  "rustls-pki-types",
  "secrecy",

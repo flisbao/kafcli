@@ -54,6 +54,7 @@ mod tests {
         Configuration {
             current_context: current_context.map(str::to_string),
             contexts,
+            groups_audit: None,
         }
     }
 

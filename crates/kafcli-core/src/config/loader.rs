@@ -122,6 +122,28 @@ mod tests {
         result.unwrap()
     }
 
+    #[test]
+    fn groups_audit_rejects_unknown_field() {
+        let result = load_text(
+            r#"{"contexts": {}, "groups_audit": {"service_pattern": "^(x)$", "surprise": 1}}"#,
+        );
+
+        assert!(
+            matches!(result, Err(CoreError::Configuration(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn groups_audit_loads_from_file() {
+        let configuration =
+            load_text(r#"{"groups_audit": {"group_name_pattern": "^[a-z-]+$"}}"#).unwrap();
+
+        let audit = configuration.groups_audit.unwrap();
+        assert_eq!(audit.group_name_pattern.as_deref(), Some("^[a-z-]+$"));
+        assert_eq!(audit.service_pattern, None);
+    }
+
     const ALL_AUTH_TYPES: &str = r#"{
   "current_context": "local",
   "contexts": {
