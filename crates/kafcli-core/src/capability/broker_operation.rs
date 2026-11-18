@@ -1,4 +1,4 @@
-//! Broker operations used by the read-only group commands, with their status per broker family.
+//! Broker operations used by the group and offset commands, with their status per broker family.
 //!
 //! The statuses follow `docs/adr/0001-event-hubs-capabilities.md`.
 
@@ -17,6 +17,8 @@ pub enum BrokerOperation {
     DescribeGroups,
     OffsetFetch,
     ListOffsets,
+    OffsetCommit,
+    OffsetsForTimes,
 }
 
 impl BrokerOperation {
@@ -27,6 +29,8 @@ impl BrokerOperation {
             Self::DescribeGroups => "DescribeGroups",
             Self::OffsetFetch => "OffsetFetch",
             Self::ListOffsets => "ListOffsets",
+            Self::OffsetCommit => "OffsetCommit",
+            Self::OffsetsForTimes => "OffsetsForTimes",
         }
     }
 }
@@ -41,7 +45,10 @@ pub fn operation_status(family: BrokerFamily, operation: BrokerOperation) -> Cap
         ) => CapabilityStatus::Unverified,
         (
             BrokerFamily::AzureEventHubs,
-            BrokerOperation::OffsetFetch | BrokerOperation::ListOffsets,
+            BrokerOperation::OffsetFetch
+            | BrokerOperation::ListOffsets
+            | BrokerOperation::OffsetCommit
+            | BrokerOperation::OffsetsForTimes,
         ) => CapabilityStatus::EmulatorOnly,
     }
 }
@@ -56,6 +63,12 @@ pub fn map_broker_operation_error(
     let code = error.rdkafka_error_code();
     if let (Some(RDKafkaErrorCode::GroupIdNotFound), Some(group)) = (code, group) {
         return CoreError::GroupNotFound(group.to_owned());
+    }
+    if operation == BrokerOperation::OffsetCommit
+        && let (Some(code), Some(group)) = (code, group)
+        && is_active_member_code(code)
+    {
+        return CoreError::CommitRefusedActiveGroup(group.to_owned());
     }
     match code {
         Some(code) if is_unsupported_code(code) => {
@@ -74,6 +87,16 @@ pub fn map_broker_operation_error(
         }
         _ => CoreError::Kafka(error.to_string()),
     }
+}
+
+/// Codes a broker answers an offset commit with when the group has members kafcli is not one of.
+fn is_active_member_code(code: RDKafkaErrorCode) -> bool {
+    matches!(
+        code,
+        RDKafkaErrorCode::UnknownMemberId
+            | RDKafkaErrorCode::IllegalGeneration
+            | RDKafkaErrorCode::RebalanceInProgress
+    )
 }
 
 /// Warning added when the group list may be partial, which only applies to Event Hubs.
@@ -209,6 +232,72 @@ mod tests {
         assert_eq!(
             incomplete_group_list_warning(BrokerFamily::GenericKafka),
             None
+        );
+    }
+
+    #[test]
+    fn offset_commit_and_offsets_for_times_are_emulator_only_on_event_hubs() {
+        assert_eq!(BrokerOperation::OffsetCommit.api_name(), "OffsetCommit");
+        assert_eq!(
+            BrokerOperation::OffsetsForTimes.api_name(),
+            "OffsetsForTimes"
+        );
+        for operation in [
+            BrokerOperation::OffsetCommit,
+            BrokerOperation::OffsetsForTimes,
+        ] {
+            assert_eq!(
+                operation_status(BrokerFamily::AzureEventHubs, operation),
+                CapabilityStatus::EmulatorOnly
+            );
+            assert_eq!(
+                operation_status(BrokerFamily::GenericKafka, operation),
+                CapabilityStatus::Documented
+            );
+        }
+    }
+
+    #[test]
+    fn commit_refused_by_member_codes_names_the_group() {
+        for code in [
+            RDKafkaErrorCode::UnknownMemberId,
+            RDKafkaErrorCode::IllegalGeneration,
+            RDKafkaErrorCode::RebalanceInProgress,
+        ] {
+            let error = KafkaError::ConsumerCommit(code);
+
+            let mapped = map_broker_operation_error(
+                BrokerOperation::OffsetCommit,
+                BrokerFamily::GenericKafka,
+                Some("g"),
+                &error,
+            );
+
+            assert!(
+                matches!(&mapped, CoreError::CommitRefusedActiveGroup(group) if group == "g"),
+                "{mapped:?}"
+            );
+            assert_eq!(
+                mapped.to_string(),
+                "the broker refused the offset commit: consumer group 'g' has active members"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_commit_on_event_hubs_names_the_service() {
+        let error = KafkaError::ConsumerCommit(RDKafkaErrorCode::UnsupportedVersion);
+
+        let mapped = map_broker_operation_error(
+            BrokerOperation::OffsetCommit,
+            BrokerFamily::AzureEventHubs,
+            Some("g"),
+            &error,
+        );
+
+        assert_eq!(
+            mapped.to_string(),
+            "OffsetCommit is not supported by this broker (Azure Event Hubs): UnsupportedVersion"
         );
     }
 }

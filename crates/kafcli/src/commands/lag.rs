@@ -7,6 +7,7 @@ use crate::output::output_format::OutputFormat;
 use crate::output::renderer::{RenderedOutput, render_output};
 use kafcli_core::config::loader::load_configuration;
 use kafcli_core::error::CoreError;
+use kafcli_core::ops::groups::cluster_offsets_reader::ClusterOffsetsReader;
 use kafcli_core::ops::groups::group_lag::{GroupLagReport, LagRequest, collect_group_lag};
 use kafcli_core::ops::groups::kafka_cluster_reader::KafkaClusterReader;
 use kafcli_core::ops::groups::lag_trend::compare_lag_samples;

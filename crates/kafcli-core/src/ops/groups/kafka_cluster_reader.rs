@@ -53,13 +53,13 @@ impl KafkaClusterReader {
         })
     }
 
-    /// Waits `interval` while polling the metadata consumer, so a long `--watch` keeps serving its
-    /// OAUTHBEARER token refreshes; librdkafka only hands them out from `poll`. The consumer has no
-    /// assignment, so a poll returns no message.
-    pub fn wait_serving_client_events(&self, interval: Duration) {
-        wait_serving_client_events(interval, Instant::now, |slice| {
-            let _ = self.metadata_consumer.poll(slice);
-        });
+    /// The connection the reader was built on, for the clients that write (offset commits).
+    pub fn connection(&self) -> &KafkaConnection {
+        &self.connection
+    }
+
+    pub fn family(&self) -> BrokerFamily {
+        self.family
     }
 
     fn map_error(
@@ -73,7 +73,7 @@ impl KafkaClusterReader {
 }
 
 /// Settings every offset-reading consumer carries: nothing is ever committed, stored or created.
-fn build_read_only_config(connection: &KafkaConnection) -> ClientConfig {
+pub(crate) fn build_read_only_config(connection: &KafkaConnection) -> ClientConfig {
     let mut config = connection.client_config().clone();
     config.set("enable.auto.commit", "false");
     config.set("enable.auto.offset.store", "false");
@@ -184,6 +184,45 @@ impl ClusterOffsetsReader for KafkaClusterReader {
             .fetch_watermarks(topic, partition, self.timeout)
             .map_err(|error| self.map_error(BrokerOperation::ListOffsets, None, &error))?;
         Ok(PartitionWatermarks { low, high })
+    }
+
+    fn find_offsets_for_time(
+        &self,
+        topic: &str,
+        partitions: &[i32],
+        timestamp_millis: i64,
+    ) -> CoreResult<BTreeMap<i32, Option<i64>>> {
+        let mut list = TopicPartitionList::new();
+        for partition in partitions {
+            list.add_partition_offset(topic, *partition, Offset::Offset(timestamp_millis))
+                .map_err(|error| self.map_error(BrokerOperation::OffsetsForTimes, None, &error))?;
+        }
+        let found = self
+            .metadata_consumer
+            .offsets_for_times(list, self.timeout)
+            .map_err(|error| self.map_error(BrokerOperation::OffsetsForTimes, None, &error))?;
+        let mut offsets = BTreeMap::new();
+        for element in found.elements() {
+            if let Err(error) = element.error() {
+                return Err(self.map_error(BrokerOperation::OffsetsForTimes, None, &error));
+            }
+            // `Offset::End` means no message at or after the timestamp.
+            let offset = match element.offset() {
+                Offset::Offset(value) if value >= 0 => Some(value),
+                _ => None,
+            };
+            offsets.insert(element.partition(), offset);
+        }
+        Ok(offsets)
+    }
+
+    /// Waits `interval` while polling the metadata consumer, so a long `--watch` keeps serving its
+    /// OAUTHBEARER token refreshes; librdkafka only hands them out from `poll`. The consumer has no
+    /// assignment, so a poll returns no message.
+    fn wait_serving_client_events(&self, interval: Duration) {
+        wait_serving_client_events(interval, Instant::now, |slice| {
+            let _ = self.metadata_consumer.poll(slice);
+        });
     }
 
     fn broker_family(&self) -> BrokerFamily {

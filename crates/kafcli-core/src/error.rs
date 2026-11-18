@@ -53,6 +53,26 @@ pub enum CoreError {
     /// `groups audit` found at least one ERROR finding; the report was already written.
     #[error("groups audit found {0} ERROR finding(s)")]
     AuditFailed(usize),
+    /// A destructive operation needs a group without members.
+    #[error(
+        "consumer group '{group}' has {members} active member(s); stop its consumers or pass --wait-empty <DURATION>"
+    )]
+    GroupNotEmpty { group: String, members: usize },
+    /// `--wait-empty` ended while the group still had members.
+    #[error(
+        "consumer group '{group}' still has {members} active member(s) after waiting {waited_seconds}s"
+    )]
+    GroupStillActive {
+        group: String,
+        members: usize,
+        waited_seconds: u64,
+    },
+    /// The broker could not tell whether the group is empty; the text says why and what to do.
+    #[error("{0}")]
+    GroupStateUnknown(String),
+    /// The broker refused an offset commit because the group has members.
+    #[error("the broker refused the offset commit: consumer group '{0}' has active members")]
+    CommitRefusedActiveGroup(String),
     /// `--max-lag` passed for the groups read, but some groups could not be read at all.
     #[error("--max-lag could not be checked for {0} group(s) that could not be read")]
     IncompleteLimitCheck(usize),
