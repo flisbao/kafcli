@@ -68,7 +68,10 @@ pub fn map_broker_operation_error(
         && let (Some(code), Some(group)) = (code, group)
         && is_active_member_code(code)
     {
-        return CoreError::CommitRefusedActiveGroup(group.to_owned());
+        return CoreError::CommitRefusedActiveGroup {
+            group: group.to_owned(),
+            detail: String::new(),
+        };
     }
     match code {
         Some(code) if is_unsupported_code(code) => {
@@ -274,7 +277,7 @@ mod tests {
             );
 
             assert!(
-                matches!(&mapped, CoreError::CommitRefusedActiveGroup(group) if group == "g"),
+                matches!(&mapped, CoreError::CommitRefusedActiveGroup { group, .. } if group == "g"),
                 "{mapped:?}"
             );
             assert_eq!(

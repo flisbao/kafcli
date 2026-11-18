@@ -62,7 +62,10 @@ impl GroupOffsetCommitter for FakeOffsetCommitter<'_> {
             .borrow_mut()
             .push((group.to_owned(), offsets.clone()));
         if self.refuse_active_group {
-            return Err(CoreError::CommitRefusedActiveGroup(group.to_owned()));
+            return Err(CoreError::CommitRefusedActiveGroup {
+                group: group.to_owned(),
+                detail: String::new(),
+            });
         }
         if let Some(failure) = &self.failure {
             return Err(CoreError::Kafka(failure.clone()));

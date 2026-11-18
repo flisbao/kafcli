@@ -70,9 +70,12 @@ pub enum CoreError {
     /// The broker could not tell whether the group is empty; the text says why and what to do.
     #[error("{0}")]
     GroupStateUnknown(String),
-    /// The broker refused an offset commit because the group has members.
-    #[error("the broker refused the offset commit: consumer group '{0}' has active members")]
-    CommitRefusedActiveGroup(String),
+    /// The broker refused an offset commit because the group has members. `detail` is empty or
+    /// starts with `; ` and says where the offsets before the change were saved.
+    #[error(
+        "the broker refused the offset commit: consumer group '{group}' has active members{detail}"
+    )]
+    CommitRefusedActiveGroup { group: String, detail: String },
     /// `--max-lag` passed for the groups read, but some groups could not be read at all.
     #[error("--max-lag could not be checked for {0} group(s) that could not be read")]
     IncompleteLimitCheck(usize),
@@ -81,6 +84,31 @@ pub enum CoreError {
 }
 
 impl CoreError {
+    /// The same error with `; <context>` appended to its text. Variants that carry text keep their
+    /// variant, so exit codes and matching do not change; the others become `Kafka` with the full
+    /// text, which is what a failed write reports anyway.
+    pub fn with_context(self, context: &str) -> Self {
+        let suffix = format!("; {context}");
+        match self {
+            Self::Kafka(text) => Self::Kafka(text + &suffix),
+            Self::InvalidInput(text) => Self::InvalidInput(text + &suffix),
+            Self::UnsupportedOperation(text) => Self::UnsupportedOperation(text + &suffix),
+            Self::Authentication(text) => Self::Authentication(text + &suffix),
+            Self::AuthenticationTransient(text) => Self::AuthenticationTransient(text + &suffix),
+            Self::OperationAborted(text) => Self::OperationAborted(text + &suffix),
+            Self::GroupStateUnknown(text) => Self::GroupStateUnknown(text + &suffix),
+            Self::CommitRefusedActiveGroup { group, detail } => Self::CommitRefusedActiveGroup {
+                group,
+                detail: detail + &suffix,
+            },
+            Self::Io(error) => Self::Io(std::io::Error::new(
+                error.kind(),
+                format!("{error}{suffix}"),
+            )),
+            other => Self::Kafka(format!("{other}{suffix}")),
+        }
+    }
+
     /// Whether the failure may pass on its own, so it should not be remembered for the whole run.
     pub fn is_transient_registry_failure(&self) -> bool {
         matches!(self, Self::SchemaRegistryTransient(_))
