@@ -9,3 +9,4 @@ pub mod sasl_scram_provider;
 pub mod sasl_settings;
 pub mod tls_provider;
 pub mod tls_settings;
+pub mod token;

@@ -18,6 +18,8 @@ pub enum CoreError {
     SecretResolution(String),
     #[error("context validation failed: {0}")]
     ContextValidation(String),
+    #[error("authentication error: {0}")]
+    Authentication(String),
     #[error("kafka error: {0}")]
     Kafka(String),
     #[error("topic '{0}' not found in cluster metadata")]
