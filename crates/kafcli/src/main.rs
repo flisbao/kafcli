@@ -11,6 +11,7 @@ use clap::error::ErrorKind;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::context_arguments::ContextCommand;
 use cli::groups_arguments::GroupsCommand;
+use cli::offsets_arguments::OffsetsCommand;
 use cli::schema_arguments::SchemaCommand;
 use commands::consume::consume;
 use commands::context::{
@@ -18,6 +19,7 @@ use commands::context::{
 };
 use commands::groups::audit_groups::audit_groups;
 use commands::lag::lag;
+use commands::offsets::show_offsets::show_offsets;
 use commands::produce::produce;
 use commands::schema::check_compatibility::check_compatibility;
 use commands::schema::get_schema::get_schema;
@@ -175,6 +177,11 @@ fn run(
             }
         },
         TopLevelCommand::Lag(lag_arguments) => lag(&execution, resolver, &lag_arguments),
+        TopLevelCommand::Offsets { command } => match command {
+            OffsetsCommand::Show(show_arguments) => {
+                show_offsets(&execution, resolver, &show_arguments)
+            }
+        },
         TopLevelCommand::Schema { command } => match command {
             SchemaCommand::Register(register_arguments) => {
                 register_schema(&execution, resolver, &TerminalPrompter, &register_arguments)

@@ -488,3 +488,67 @@ fn audit_warns_r3_for_stopped_group_with_lag() {
     assert_eq!(code, Some(0), "{report}");
     assert!(has_finding(&report, "R3", "WARNING"), "{report}");
 }
+
+/// `partition -> offset` from `kafka-get-offsets.sh --time <time>` (`-1` log end, `-2` log start).
+fn get_offsets_with_kafka_tool(topic: &str, time: &str) -> BTreeMap<i64, i64> {
+    run_kafka_tool("kafka-get-offsets.sh", &["--topic", topic, "--time", time])
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.rsplitn(3, ':');
+            let offset = fields.next()?.trim().parse().ok()?;
+            let partition = fields.next()?.parse().ok()?;
+            Some((partition, offset))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn offsets_show_matches_watermarks() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let (topic, group) = prepare_stopped_group();
+
+    let output = build_kafcli_command(directory.path())
+        .args([
+            "offsets",
+            "show",
+            "--group",
+            &group,
+            "--topic",
+            &topic.name,
+            "--output",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let log_end = get_offsets_with_kafka_tool(&topic.name, "-1");
+    let log_start = get_offsets_with_kafka_tool(&topic.name, "-2");
+    let partitions = report["data"]["partitions"].as_array().unwrap();
+    assert!(!partitions.is_empty(), "{report}");
+    assert_eq!(report["data"]["group"].as_str(), Some(group.as_str()));
+    for partition in partitions {
+        let index = partition["partition"].as_i64().unwrap();
+        assert_eq!(
+            partition["log_end_offset"].as_i64(),
+            log_end.get(&index).copied(),
+            "{partition}"
+        );
+        assert_eq!(
+            partition["log_start_offset"].as_i64(),
+            log_start.get(&index).copied(),
+            "{partition}"
+        );
+        assert!(
+            partition["committed_offset"].as_i64().is_some(),
+            "{partition}"
+        );
+    }
+}

@@ -1,3 +1,4 @@
+use crate::capability::error_classification::classify_topic_metadata_error;
 use crate::config::model::ConnectionContext;
 use crate::connection::client_config_builder::ConnectionSettings;
 use crate::connection::kafka_client_context::KafkaClientContext;
@@ -126,8 +127,11 @@ pub(crate) fn fetch_partition_identifiers<C: ConsumerContext>(
     let topic_metadata = metadata
         .topics()
         .iter()
-        .find(|candidate| candidate.name() == topic && candidate.error().is_none())
+        .find(|candidate| candidate.name() == topic)
         .ok_or_else(|| CoreError::TopicNotFound(topic.to_string()))?;
+    if let Some(error) = topic_metadata.error() {
+        return Err(classify_topic_metadata_error(topic, error));
+    }
     Ok(topic_metadata
         .partitions()
         .iter()

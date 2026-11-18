@@ -2,6 +2,7 @@ use crate::cli::consume_arguments::ConsumeArguments;
 use crate::cli::context_arguments::ContextCommand;
 use crate::cli::groups_arguments::GroupsCommand;
 use crate::cli::lag_arguments::LagArguments;
+use crate::cli::offsets_arguments::OffsetsCommand;
 use crate::cli::produce_arguments::ProduceArguments;
 use crate::cli::schema_arguments::SchemaCommand;
 use crate::output::output_format::OutputFormat;
@@ -121,5 +122,10 @@ Notes:
     Groups {
         #[command(subcommand)]
         command: GroupsCommand,
+    },
+    /// Inspect consumer group offsets
+    Offsets {
+        #[command(subcommand)]
+        command: OffsetsCommand,
     },
 }

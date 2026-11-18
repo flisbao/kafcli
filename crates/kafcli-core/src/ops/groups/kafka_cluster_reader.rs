@@ -5,12 +5,13 @@ use std::time::Duration;
 
 use rdkafka::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
-use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::error::KafkaError;
 use rdkafka::groups::GroupMemberInfo;
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 
 use crate::capability::broker_capabilities::{BrokerFamily, detect_broker_family};
 use crate::capability::broker_operation::{BrokerOperation, map_broker_operation_error};
+use crate::capability::error_classification::classify_topic_metadata_error;
 use crate::config::model::ConnectionContext;
 use crate::connection::client_config_builder::ConnectionSettings;
 use crate::connection::kafka_client_context::KafkaClientContext;
@@ -110,14 +111,8 @@ impl ClusterOffsetsReader for KafkaClusterReader {
         for topic_metadata in metadata.topics() {
             let name = topic_metadata.name();
             if let Some(error) = topic_metadata.error() {
-                let code = RDKafkaErrorCode::from(error);
                 if topic.is_some() {
-                    return Err(match code {
-                        RDKafkaErrorCode::UnknownTopicOrPartition => {
-                            CoreError::TopicNotFound(name.to_owned())
-                        }
-                        other => CoreError::Kafka(format!("topic '{name}' metadata: {other:?}")),
-                    });
+                    return Err(classify_topic_metadata_error(name, error));
                 }
                 continue;
             }

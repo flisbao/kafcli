@@ -33,6 +33,14 @@ const FAILURE_EXIT_CODE: u8 = 1;
 const HEX_VALUE_MARKER: &str = "hex:";
 const MISSING_VALUE_MARKER: &str = "-";
 
+/// Parses `--dump`; a dump of zero messages would only wait for the timeout, so it is refused.
+fn parse_dump_count(text: &str) -> Result<usize, String> {
+    match text.parse::<usize>() {
+        Ok(count) if count >= 1 => Ok(count),
+        _ => Err("--dump must be at least 1".to_string()),
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "capability_probe",
@@ -50,7 +58,7 @@ struct ProbeArguments {
     topic: String,
     /// Reads up to N messages from the topic and prints them. Writes nothing, so it is allowed on
     /// protected contexts.
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = parse_dump_count)]
     dump: Option<usize>,
     /// Timeout in seconds applied to each network operation of the probe, or idle time before a
     /// dump stops.
@@ -384,6 +392,27 @@ mod tests {
                 value_hex: String::new(),
             }],
         }
+    }
+
+    #[test]
+    fn dump_zero_is_rejected() {
+        let result =
+            ProbeArguments::try_parse_from(["capability_probe", "--topic", "t", "--dump", "0"]);
+
+        let error = result.err().expect("--dump 0 must be refused");
+        assert!(
+            error.to_string().contains("--dump must be at least 1"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn dump_one_is_accepted() {
+        let arguments =
+            ProbeArguments::try_parse_from(["capability_probe", "--topic", "t", "--dump", "1"])
+                .unwrap();
+
+        assert_eq!(arguments.dump, Some(1));
     }
 
     #[test]

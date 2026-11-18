@@ -1,7 +1,9 @@
 use crate::capability::capability_report::{
     CapabilityCheck, CapabilityName, CapabilityOutcome, CapabilityReport,
 };
-use crate::capability::error_classification::classify_kafka_error;
+use crate::capability::error_classification::{
+    classify_kafka_error, classify_topic_metadata_error,
+};
 use crate::config::model::ConnectionContext;
 use crate::connection::client_config_builder::ConnectionSettings;
 use crate::connection::kafka_client_context::KafkaClientContext;
@@ -234,8 +236,11 @@ impl ProbeSession<'_> {
         let topic = metadata
             .topics()
             .iter()
-            .find(|topic| topic.name() == self.topic && topic.error().is_none())
+            .find(|topic| topic.name() == self.topic)
             .ok_or_else(|| CoreError::TopicNotFound(self.topic.to_string()))?;
+        if let Some(error) = topic.error() {
+            return Err(classify_topic_metadata_error(self.topic, error));
+        }
 
         Ok(TopicMetadataSummary {
             broker_count: metadata.brokers().len(),

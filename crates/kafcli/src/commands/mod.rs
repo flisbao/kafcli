@@ -3,6 +3,7 @@ pub mod consume;
 pub mod context;
 pub mod groups;
 pub mod lag;
+pub mod offsets;
 pub mod produce;
 pub mod registry_connection;
 pub mod schema;
