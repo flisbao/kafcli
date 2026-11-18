@@ -1,13 +1,9 @@
 use kafcli_core::error::CoreError;
 use std::process::ExitCode;
 
-/// Process exit codes. `LimitExceeded` is reserved for the bulk-operation limits.
+/// Process exit codes. `LimitExceeded` means a limit the user set, such as `--max-lag`, was crossed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-#[allow(
-    dead_code,
-    reason = "LimitExceeded is produced by the bulk-operation limits added in a later plan"
-)]
 pub enum KafcliExitCode {
     Success = 0,
     Failure = 1,
@@ -15,7 +11,8 @@ pub enum KafcliExitCode {
     Aborted = 3,
 }
 
-/// Maps an error to the process exit code: an aborted operation is 3, anything else is 1.
+/// Maps an error to the process exit code: a crossed limit is 2, an aborted operation is 3,
+/// anything else is 1.
 pub fn resolve_exit_code(error: &anyhow::Error) -> ExitCode {
     ExitCode::from(classify_exit_code(error) as u8)
 }
@@ -25,6 +22,7 @@ fn classify_exit_code(error: &anyhow::Error) -> KafcliExitCode {
         .chain()
         .find_map(|cause| cause.downcast_ref::<CoreError>())
     {
+        Some(CoreError::LimitExceeded(_)) => KafcliExitCode::LimitExceeded,
         Some(CoreError::OperationAborted(_)) => KafcliExitCode::Aborted,
         _ => KafcliExitCode::Failure,
     }
@@ -47,6 +45,20 @@ mod tests {
             .context("could not delete topic");
 
         assert_eq!(classify_exit_code(&error), KafcliExitCode::Aborted);
+    }
+
+    #[test]
+    fn limit_exceeded_maps_to_exit_code_two() {
+        let error = anyhow::Error::new(CoreError::LimitExceeded("group 'g' lag 5".into()));
+
+        assert_eq!(classify_exit_code(&error), KafcliExitCode::LimitExceeded);
+    }
+
+    #[test]
+    fn audit_failed_maps_to_exit_code_one() {
+        let error = anyhow::Error::new(CoreError::AuditFailed(2));
+
+        assert_eq!(classify_exit_code(&error), KafcliExitCode::Failure);
     }
 
     #[test]

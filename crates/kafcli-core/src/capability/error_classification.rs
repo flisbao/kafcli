@@ -16,7 +16,7 @@ pub fn classify_kafka_error(error: &KafkaError) -> CapabilityOutcome {
     }
 }
 
-fn is_unsupported_code(code: RDKafkaErrorCode) -> bool {
+pub(crate) fn is_unsupported_code(code: RDKafkaErrorCode) -> bool {
     matches!(
         code,
         RDKafkaErrorCode::UnsupportedVersion

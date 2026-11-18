@@ -42,6 +42,17 @@ pub enum CoreError {
     Template(String),
     #[error("operation aborted: {0}")]
     OperationAborted(String),
+    /// The broker does not offer an operation kafcli needs.
+    #[error("{0}")]
+    UnsupportedOperation(String),
+    #[error("consumer group '{0}' not found")]
+    GroupNotFound(String),
+    /// A limit the user set was crossed; the command already wrote its report.
+    #[error("limit exceeded: {0}")]
+    LimitExceeded(String),
+    /// `groups audit` found at least one ERROR finding; the report was already written.
+    #[error("groups audit found {0} ERROR finding(s)")]
+    AuditFailed(usize),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 }
