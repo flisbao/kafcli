@@ -2,6 +2,7 @@
 
 use assert_cmd::Command;
 use assert_cmd::assert::Assert;
+use kafcli_core::registry::fake_registry_server::{FakeRegistryServer, FakeRoute};
 use predicates::prelude::*;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -851,5 +852,69 @@ fn add_managed_identity_context_without_flags_shows_system_assigned() {
     assert_eq!(
         shown["data"]["principal"],
         json!("system-assigned managed identity")
+    );
+}
+
+const ENTRA_TENANT: &str = "tenant-1";
+const SERVICE_PRINCIPAL_SECRET_VARIABLE: &str = "KAFCLI_CONTEXT_TEST_SP_SECRET";
+
+/// Unsecured JWT (`alg: none`) whose `appid` claim is `app-123`, the principal `context test` reports.
+const ENTRA_ACCESS_TOKEN: &str =
+    "eyJhbGciOiJub25lIn0.eyJhcHBpZCI6ImFwcC0xMjMiLCJzdWIiOiJpZ25vcmVkIn0.";
+
+#[test]
+fn context_test_reports_token_principal() {
+    let directory = tempfile::tempdir().unwrap();
+    let entra = FakeRegistryServer::start(vec![FakeRoute {
+        method: "POST".to_string(),
+        path_and_query: format!("/{ENTRA_TENANT}/oauth2/v2.0/token"),
+        status: 200,
+        headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+        body: json!({"access_token": ENTRA_ACCESS_TOKEN, "expires_in": 3600}).to_string(),
+    }])
+    .unwrap();
+    build_kafcli_command(directory.path())
+        .env(SERVICE_PRINCIPAL_SECRET_VARIABLE, "sp-client-secret")
+        .args(["context", "add", "entra", "--brokers", "127.0.0.1:1"])
+        .args([
+            "--auth-type",
+            "azure-sp-secret",
+            "--tenant-id",
+            ENTRA_TENANT,
+        ])
+        .args([
+            "--client-id",
+            "app-123",
+            "--scope",
+            "https://eventhubs.example/.default",
+        ])
+        .arg("--use")
+        .args([
+            "--secret-ref",
+            &format!("env:{SERVICE_PRINCIPAL_SECRET_VARIABLE}"),
+        ])
+        .args(["--authority-host", &entra.url()])
+        .assert()
+        .success();
+
+    // The token is issued before the broker is contacted, so the failure comes from Kafka.
+    let assertion = build_kafcli_command(directory.path())
+        .env(SERVICE_PRINCIPAL_SECRET_VARIABLE, "sp-client-secret")
+        .args(["context", "test", "--timeout-seconds", "2"])
+        .assert()
+        .code(1);
+
+    let stderr = String::from_utf8_lossy(&assertion.get_output().stderr).to_string();
+    assert!(stderr.contains("error: kafka error"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains(ENTRA_ACCESS_TOKEN),
+        "stderr leaks the token: {stderr}"
+    );
+    assert!(
+        entra
+            .recorded_requests()
+            .iter()
+            .any(|request| request.path_and_query == format!("/{ENTRA_TENANT}/oauth2/v2.0/token")),
+        "no token request reached the fake Entra endpoint"
     );
 }

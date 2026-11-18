@@ -45,6 +45,15 @@ fn read_bounded_secret_file(path: &Path) -> CoreResult<String> {
         ))
     };
 
+    // Checked before opening: opening a named pipe blocks until a writer appears.
+    let path_metadata = std::fs::metadata(path).map_err(unreadable)?;
+    if !path_metadata.is_file() {
+        return Err(CoreError::SecretResolution(format!(
+            "secret file '{}' is not a regular file",
+            path.display()
+        )));
+    }
+
     let file = File::open(path).map_err(unreadable)?;
     let declared_length = file.metadata().map_err(unreadable)?.len();
     if declared_length > MAXIMUM_SECRET_FILE_BYTES {
@@ -121,6 +130,34 @@ mod tests {
             .to_string();
         assert!(error.contains("/nonexistent/kafcli-secret"));
     }
+    #[cfg(unix)]
+    #[test]
+    fn rejects_named_pipe_without_blocking() {
+        let directory = tempfile::tempdir().unwrap();
+        let pipe_path = directory.path().join("secret-pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&pipe_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let reference = SecretReference::File {
+            path: pipe_path.clone(),
+        };
+
+        let error = FileSecretResolver
+            .resolve_secret(&reference)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(
+            error,
+            format!(
+                "secret could not be resolved: secret file '{}' is not a regular file",
+                pipe_path.display()
+            )
+        );
+    }
+
     #[test]
     fn rejects_non_file_reference() {
         let reference = SecretReference::Environment {

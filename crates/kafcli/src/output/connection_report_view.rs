@@ -28,6 +28,14 @@ impl TableRenderable for ConnectionReport {
                     .map_or("-".to_string(), sanitize_for_terminal),
             ),
         ]);
+        table.add_row(vec![
+            Cell::new("authenticated_principal"),
+            Cell::new(
+                self.authenticated_principal
+                    .as_deref()
+                    .map_or("-".to_string(), sanitize_for_terminal),
+            ),
+        ]);
         table.add_row(vec![Cell::new("brokers"), Cell::new(self.broker_count)]);
         table.add_row(vec![
             Cell::new("topics"),
@@ -59,6 +67,7 @@ mod tests {
             context_name: "dev".to_string(),
             auth_type: "none".to_string(),
             principal: principal.map(str::to_string),
+            authenticated_principal: None,
             broker_count: 1,
             visible_topics: (1..=topic_count)
                 .map(|number| format!("topic-{number:02}"))
@@ -116,6 +125,33 @@ mod tests {
             rendered
                 .lines()
                 .any(|line| line.contains("principal") && line.contains("┆ -")),
+            "rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn authenticated_principal_row_shows_token_principal() {
+        let mut report = report_with_topics(0, Some("kafcli"));
+        report.authenticated_principal = Some("app-123".to_string());
+
+        let rendered = report.render_table();
+
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.contains("authenticated_principal") && line.contains("app-123")),
+            "rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn missing_authenticated_principal_renders_dash() {
+        let rendered = report_with_topics(0, Some("kafcli")).render_table();
+
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.contains("authenticated_principal") && line.contains("┆ -")),
             "rendered: {rendered}"
         );
     }

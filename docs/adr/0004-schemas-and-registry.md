@@ -75,7 +75,7 @@ As decisões abaixo valem para o código do branch `feat/schemas`. Onde a especi
 
 - Header Kafka `content-type` com `avro/binary+<schema id>` em UTF-8, e o corpo em Avro binário puro, sem prefixo. Na leitura, o header é separado no primeiro `+`, e a primeira parte tem de ser exatamente `avro/binary`.
 - Mensagem sem header: `value has no content-type header with avro/binary+<schema id>; the legacy 36-byte prefix format is not supported`.
-- Azure só com autenticação `bearer` até o plano 03. O erro `azure schema registry needs auth type 'bearer'` é da Task 1.
+- Azure aceita autenticação `bearer` (com `token_ref`) ou `azure`, que usa um token do Entra ID herdado da credencial azure-* do broker. O modo `azure` está descrito no ADR 0005.
 - Os caminhos e o `api-version` do Azure (`/$schemaGroups/<grupo>/schemas/<nome>/versions/<n>?api-version=2023-07-01`) foram verificados só contra o mock local. A rodada real fica pendente junto com a do ADR 0001.
 
 ### Wire Confluent
