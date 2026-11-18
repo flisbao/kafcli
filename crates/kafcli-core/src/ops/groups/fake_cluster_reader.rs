@@ -38,7 +38,11 @@ pub struct FakeClusterReader {
     clock: Cell<Instant>,
     waits: RefCell<Vec<Duration>>,
     committed_offset_requests: RefCell<Vec<CommittedOffsetRequest>>,
+    offsets_for_time_requests: RefCell<Vec<OffsetsForTimeRequest>>,
 }
+
+/// One `find_offsets_for_time` call: topic, partitions and timestamp in milliseconds.
+pub type OffsetsForTimeRequest = (String, Vec<i32>, i64);
 
 impl FakeClusterReader {
     pub fn new(family: BrokerFamily) -> Self {
@@ -57,6 +61,7 @@ impl FakeClusterReader {
             clock: Cell::new(Instant::now()),
             waits: RefCell::new(Vec::new()),
             committed_offset_requests: RefCell::new(Vec::new()),
+            offsets_for_time_requests: RefCell::new(Vec::new()),
         }
     }
 
@@ -77,6 +82,11 @@ impl FakeClusterReader {
             1 => snapshots.front().cloned().unwrap_or_default(),
             _ => snapshots.pop_front().unwrap_or_default(),
         }
+    }
+
+    /// The arguments of every `find_offsets_for_time` call, in order.
+    pub fn offsets_for_time_requests(&self) -> Vec<OffsetsForTimeRequest> {
+        self.offsets_for_time_requests.borrow().clone()
     }
 
     /// The `(group, partitions)` arguments of every `fetch_committed_offsets` call, in order.
@@ -158,6 +168,11 @@ impl ClusterOffsetsReader for FakeClusterReader {
         partitions: &[i32],
         timestamp_millis: i64,
     ) -> CoreResult<BTreeMap<i32, Option<i64>>> {
+        self.offsets_for_time_requests.borrow_mut().push((
+            topic.to_owned(),
+            partitions.to_vec(),
+            timestamp_millis,
+        ));
         Ok(partitions
             .iter()
             .map(|partition| {
