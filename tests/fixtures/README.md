@@ -81,6 +81,20 @@ docker compose -f tests/fixtures/compose.yaml down -v
 - O teste de Avro profundamente aninhado grava os bytes diretamente pelo núcleo, porque `produce` recusa JSON com mais de 64 níveis.
 - Os subjects e tópicos têm nomes únicos por execução e os tópicos são removidos ao final, mesmo quando um teste falha.
 
+## Testes de operações destrutivas
+
+Os testes `integration_destructive_operations_cli` usam o broker plaintext e conferem o resultado com `kafka-consumer-groups.sh`.
+
+```bash
+docker compose -f tests/fixtures/compose.yaml up -d --wait kafka-plaintext
+cargo test -p kafcli --test integration_destructive_operations_cli -- --ignored --test-threads=1
+docker compose -f tests/fixtures/compose.yaml down -v
+```
+
+- Cada teste prepara um grupo parado como nos testes de leitura (3 partições, 30 mensagens, 12 commitadas).
+- Os offsets são escritos só nos grupos criados pelo teste. Backups e audit log vão só para o diretório temporário apontado por `KAFCLI_STATE_DIR`.
+- Para simular um consumer esquecido de pé, o teste sobe `kafka-console-consumer.sh` em segundo plano (`docker compose exec -d`) num tópico ocioso do mesmo grupo. Ele termina sozinho pelo `--timeout-ms` e não mexe nos offsets do tópico testado.
+
 ## Certificados
 
 `generate-certificates.sh` gera uma CA própria e os certificados de servidor e de cliente em `tests/fixtures/certificates/` (PEM). O diretório está no `.gitignore`: chaves geradas nunca são commitadas. Os certificados são descartáveis e valem para uso local e de CI apenas.

@@ -19,6 +19,7 @@ use commands::context::{
 };
 use commands::groups::audit_groups::audit_groups;
 use commands::lag::lag;
+use commands::offsets::set_offsets::set_offsets;
 use commands::offsets::show_offsets::show_offsets;
 use commands::produce::produce;
 use commands::schema::check_compatibility::check_compatibility;
@@ -180,6 +181,9 @@ fn run(
         TopLevelCommand::Offsets { command } => match command {
             OffsetsCommand::Show(show_arguments) => {
                 show_offsets(&execution, resolver, &show_arguments)
+            }
+            OffsetsCommand::Set(set_arguments) => {
+                set_offsets(&execution, resolver, &TerminalPrompter, &set_arguments)
             }
         },
         TopLevelCommand::Schema { command } => match command {

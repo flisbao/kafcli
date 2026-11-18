@@ -1,6 +1,7 @@
 pub mod cluster_reader_connection;
 pub mod consume;
 pub mod context;
+pub mod destructive_support;
 pub mod groups;
 pub mod lag;
 pub mod offsets;

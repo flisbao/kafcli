@@ -28,29 +28,17 @@ impl ConfirmationPrompter for TerminalPrompter {
 }
 
 /// Prompts need both an interactive stdin (answers) and stderr (questions).
-#[allow(
-    dead_code,
-    reason = "only reachable through TerminalPrompter, which a later plan wires in"
-)]
 fn decide_interactivity(stdin_is_terminal: bool, stderr_is_terminal: bool) -> bool {
     stdin_is_terminal && stderr_is_terminal
 }
 
 /// The question as shown: the guard's text, sanitized (it can contain broker-controlled names),
 /// followed by a space before the cursor.
-#[allow(
-    dead_code,
-    reason = "only reachable through TerminalPrompter, which a later plan wires in"
-)]
 fn format_prompt_line(question: &str) -> String {
     sanitize_for_terminal(&format!("{question} "))
 }
 
 /// Writes `question` to stderr and reads one line, without its line break.
-#[allow(
-    dead_code,
-    reason = "only reachable through TerminalPrompter, which a later plan wires in"
-)]
 fn ask(question: &str) -> CoreResult<String> {
     let mut stderr = io::stderr();
     stderr.write_all(format_prompt_line(question).as_bytes())?;
