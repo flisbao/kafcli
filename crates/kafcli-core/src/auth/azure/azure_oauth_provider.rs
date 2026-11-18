@@ -37,6 +37,9 @@ impl AuthProvider for AzureOAuthAuthProvider {
     fn describe_principal(&self) -> Option<String> {
         match &self.credential {
             AzureCredentialConfig::ServicePrincipalSecret(config) => Some(config.client_id.clone()),
+            AzureCredentialConfig::ServicePrincipalCertificate(config) => {
+                Some(config.client_id.clone())
+            }
         }
     }
 

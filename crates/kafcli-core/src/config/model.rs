@@ -1,5 +1,6 @@
 use crate::config::azure_credential_model::{
-    AzureCredentialConfig, AzureServicePrincipalSecretConfig,
+    AzureCredentialConfig, AzureServicePrincipalCertificateConfig,
+    AzureServicePrincipalSecretConfig,
 };
 use crate::config::schema_registry_model::SchemaRegistryConfig;
 use crate::secret::reference::SecretReference;
@@ -52,6 +53,8 @@ pub enum AuthConfig {
     OAuthOidc(OAuthOidcAuthConfig),
     #[serde(rename = "azure-sp-secret")]
     AzureServicePrincipalSecret(AzureServicePrincipalSecretConfig),
+    #[serde(rename = "azure-sp-cert")]
+    AzureServicePrincipalCertificate(AzureServicePrincipalCertificateConfig),
 }
 
 impl AuthConfig {
@@ -68,6 +71,7 @@ impl AuthConfig {
             Self::Bearer(_) => "bearer",
             Self::OAuthOidc(_) => "oauth-oidc",
             Self::AzureServicePrincipalSecret(_) => "azure-sp-secret",
+            Self::AzureServicePrincipalCertificate(_) => "azure-sp-cert",
         }
     }
 
@@ -76,6 +80,9 @@ impl AuthConfig {
         match self {
             Self::AzureServicePrincipalSecret(config) => Some(
                 AzureCredentialConfig::ServicePrincipalSecret(config.clone()),
+            ),
+            Self::AzureServicePrincipalCertificate(config) => Some(
+                AzureCredentialConfig::ServicePrincipalCertificate(config.clone()),
             ),
             Self::Plaintext
             | Self::Tls(_)

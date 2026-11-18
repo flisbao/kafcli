@@ -1,4 +1,6 @@
 use super::azure_environment::{AzureEnvironment, resolve_authority_host};
+use super::client_assertion::ClientCertificate;
+use super::service_principal_certificate_source::ServicePrincipalCertificateTokenSource;
 use super::service_principal_secret_source::ServicePrincipalSecretTokenSource;
 use super::token_http_client::{TOKEN_REQUEST_TIMEOUT, TokenHttpClient};
 use crate::auth::token::cached_token_source::CachedTokenSource;
@@ -9,8 +11,6 @@ use crate::error::CoreResult;
 use crate::secret::resolver::SecretResolver;
 use std::sync::Arc;
 
-/// Builds the cached token source of one Azure credential. The secret is resolved here, once,
-/// and kept only inside the source.
 /// Resolves the authority and checks it before any request leaves the process. A context setting
 /// may use loopback HTTP (validated as for contexts); the environment value must be HTTPS.
 fn checked_authority_host(
@@ -26,6 +26,9 @@ fn checked_authority_host(
     Ok(host)
 }
 
+/// Builds the cached token source of one Azure credential. The secret is resolved here, once,
+/// and kept only inside the source. The certificate file is read here too, so an unreadable file
+/// fails before any connection.
 pub fn create_azure_token_source(
     credential: &AzureCredentialConfig,
     scope: &str,
@@ -48,14 +51,60 @@ pub fn create_azure_token_source(
             );
             Ok(Arc::new(CachedTokenSource::new(Box::new(source))))
         }
+        AzureCredentialConfig::ServicePrincipalCertificate(config) => {
+            let authority_host =
+                checked_authority_host(config.authority_host.as_deref(), environment.as_ref())?;
+            let certificate = ClientCertificate::load_from_pem_file(&config.certificate_location)?;
+            let http = TokenHttpClient::new(TOKEN_REQUEST_TIMEOUT)?;
+            let source = ServicePrincipalCertificateTokenSource::new(
+                http,
+                authority_host,
+                config.tenant_id.clone(),
+                config.client_id.clone(),
+                certificate,
+                scope.to_owned(),
+            );
+            Ok(Arc::new(CachedTokenSource::new(Box::new(source))))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::azure_credential_model::AzureServicePrincipalSecretConfig;
+    use crate::config::azure_credential_model::{
+        AzureServicePrincipalCertificateConfig, AzureServicePrincipalSecretConfig,
+    };
     use crate::secret::fixed_resolver::FixedSecretResolver;
+    use std::path::PathBuf;
+
+    fn certificate_credential(certificate_location: PathBuf) -> AzureCredentialConfig {
+        AzureCredentialConfig::ServicePrincipalCertificate(AzureServicePrincipalCertificateConfig {
+            tenant_id: "tenant-1".to_string(),
+            client_id: "app".to_string(),
+            certificate_location,
+            scope: None,
+            authority_host: None,
+        })
+    }
+
+    #[test]
+    fn unreadable_certificate_fails_before_any_request() {
+        let missing = PathBuf::from("/nonexistent/kafcli-test/app-cert.pem");
+        let environment = Arc::new(FixedEnvironment(None));
+
+        let error = match create_azure_token_source(
+            &certificate_credential(missing),
+            "https://ns.servicebus.windows.net/.default",
+            &FixedSecretResolver::returning("unused"),
+            environment,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("expected the missing certificate to be refused"),
+        };
+
+        assert!(format!("{error}").contains("could not read certificate file"));
+    }
 
     struct FixedEnvironment(Option<String>);
 

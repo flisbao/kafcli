@@ -35,6 +35,11 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
         AuthConfig::AzureServicePrincipalSecret(config) => Box::new(AzureOAuthAuthProvider::new(
             AzureCredentialConfig::ServicePrincipalSecret(config.clone()),
         )),
+        AuthConfig::AzureServicePrincipalCertificate(config) => {
+            Box::new(AzureOAuthAuthProvider::new(
+                AzureCredentialConfig::ServicePrincipalCertificate(config.clone()),
+            ))
+        }
     }
 }
 

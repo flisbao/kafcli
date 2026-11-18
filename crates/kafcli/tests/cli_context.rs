@@ -745,3 +745,30 @@ fn azure_sp_secret_show_lists_reference() {
     );
     assert!(!String::from_utf8_lossy(&assertion.get_output().stdout).contains("s3cret-value"));
 }
+
+#[test]
+fn add_azure_sp_cert_requires_certificate_location() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args([
+            "context",
+            "add",
+            "prd-cert",
+            "--brokers",
+            "prd-ns.servicebus.windows.net:9093",
+        ])
+        .args([
+            "--auth-type",
+            "azure-sp-cert",
+            "--tenant-id",
+            "tenant-1",
+            "--client-id",
+            "app",
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--auth-type azure-sp-cert requires --tenant-id, --client-id and --certificate-location",
+        ));
+}

@@ -112,14 +112,32 @@ fn validate_azure_credential(
     protected: bool,
 ) -> CoreResult<()> {
     match credential {
-        AzureCredentialConfig::ServicePrincipalSecret(config) => {
-            validate_azure_tenant_id(&config.tenant_id)?;
-            if config.client_id.trim().is_empty() {
-                return Err(build_validation_error("azure client_id must not be empty"));
-            }
-            validate_authority_host(config.authority_host.as_deref(), protected)
-        }
+        AzureCredentialConfig::ServicePrincipalSecret(config) => validate_azure_identifiers(
+            &config.tenant_id,
+            &config.client_id,
+            config.authority_host.as_deref(),
+            protected,
+        ),
+        AzureCredentialConfig::ServicePrincipalCertificate(config) => validate_azure_identifiers(
+            &config.tenant_id,
+            &config.client_id,
+            config.authority_host.as_deref(),
+            protected,
+        ),
     }
+}
+
+fn validate_azure_identifiers(
+    tenant_id: &str,
+    client_id: &str,
+    authority_host: Option<&str>,
+    protected: bool,
+) -> CoreResult<()> {
+    validate_azure_tenant_id(tenant_id)?;
+    if client_id.trim().is_empty() {
+        return Err(build_validation_error("azure client_id must not be empty"));
+    }
+    validate_authority_host(authority_host, protected)
 }
 
 fn validate_azure_tenant_id(tenant_id: &str) -> CoreResult<()> {
@@ -260,7 +278,8 @@ fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
         | AuthConfig::Tls(_)
         | AuthConfig::MutualTls(_)
         | AuthConfig::AzureConnectionString(_)
-        | AuthConfig::AzureServicePrincipalSecret(_) => false,
+        | AuthConfig::AzureServicePrincipalSecret(_)
+        | AuthConfig::AzureServicePrincipalCertificate(_) => false,
     }
 }
 

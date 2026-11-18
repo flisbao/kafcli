@@ -43,6 +43,7 @@ fn collect_secret_references(auth: &AuthConfig) -> Vec<String> {
         AuthConfig::Bearer(config) => vec![&config.token_ref],
         AuthConfig::OAuthOidc(config) => vec![&config.secret_ref],
         AuthConfig::AzureServicePrincipalSecret(config) => vec![&config.secret_ref],
+        AuthConfig::AzureServicePrincipalCertificate(_) => Vec::new(),
     };
     references.into_iter().map(ToString::to_string).collect()
 }

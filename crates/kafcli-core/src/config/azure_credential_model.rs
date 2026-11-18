@@ -1,10 +1,12 @@
 use crate::secret::reference::SecretReference;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Azure credential of a context. Serialized through the `AuthConfig` variants, one per credential.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzureCredentialConfig {
     ServicePrincipalSecret(AzureServicePrincipalSecretConfig),
+    ServicePrincipalCertificate(AzureServicePrincipalCertificateConfig),
 }
 
 impl AzureCredentialConfig {
@@ -12,6 +14,7 @@ impl AzureCredentialConfig {
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::ServicePrincipalSecret(_) => "azure-sp-secret",
+            Self::ServicePrincipalCertificate(_) => "azure-sp-cert",
         }
     }
 
@@ -19,6 +22,7 @@ impl AzureCredentialConfig {
     pub fn scope(&self) -> Option<&str> {
         match self {
             Self::ServicePrincipalSecret(config) => config.scope.as_deref(),
+            Self::ServicePrincipalCertificate(config) => config.scope.as_deref(),
         }
     }
 
@@ -26,6 +30,7 @@ impl AzureCredentialConfig {
     pub fn secret_references(&self) -> Vec<&SecretReference> {
         match self {
             Self::ServicePrincipalSecret(config) => vec![&config.secret_ref],
+            Self::ServicePrincipalCertificate(_) => Vec::new(),
         }
     }
 }
@@ -38,6 +43,21 @@ pub struct AzureServicePrincipalSecretConfig {
     pub client_id: String,
     /// Client secret. Only the reference is stored, never the value.
     pub secret_ref: SecretReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Entra ID authority, `https://`. Defaults to the public cloud or `AZURE_AUTHORITY_HOST`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_host: Option<String>,
+}
+
+/// Entra ID service principal that authenticates with a certificate: a signed RS256 client assertion.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureServicePrincipalCertificateConfig {
+    pub tenant_id: String,
+    pub client_id: String,
+    /// PEM file with the application certificate and its unencrypted RSA private key.
+    pub certificate_location: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Entra ID authority, `https://`. Defaults to the public cloud or `AZURE_AUTHORITY_HOST`.

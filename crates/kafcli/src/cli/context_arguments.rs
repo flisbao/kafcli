@@ -64,22 +64,22 @@ pub struct AddContextArguments {
     /// Token endpoint of the OpenID Connect provider, https:// (oauth-oidc auth type)
     #[arg(long)]
     pub token_endpoint_url: Option<String>,
-    /// OAuth client id (oauth-oidc and azure-sp-secret auth types)
+    /// OAuth client id (oauth-oidc, azure-sp-secret and azure-sp-cert auth types)
     #[arg(long)]
     pub client_id: Option<String>,
-    /// OAuth scope requested with the token (oauth-oidc and azure-sp-secret auth types)
+    /// OAuth scope requested with the token (oauth-oidc, azure-sp-secret and azure-sp-cert auth types)
     #[arg(long)]
     pub scope: Option<String>,
-    /// Directory (tenant) id of the Entra ID application (azure-sp-secret auth type)
+    /// Directory (tenant) id of the Entra ID application (azure-sp-secret and azure-sp-cert auth types)
     #[arg(long)]
     pub tenant_id: Option<String>,
-    /// Entra ID authority, https:// (azure-sp-secret auth type); defaults to AZURE_AUTHORITY_HOST or the public cloud
+    /// Entra ID authority, https:// (azure-sp-secret and azure-sp-cert auth types); defaults to AZURE_AUTHORITY_HOST or the public cloud
     #[arg(long)]
     pub authority_host: Option<String>,
     /// CA certificate file used to verify the brokers and the oauth-oidc token endpoint
     #[arg(long)]
     pub ca_location: Option<PathBuf>,
-    /// Client certificate file (mtls auth type)
+    /// Client certificate file (mtls auth type); PEM with the certificate and an unencrypted RSA key (azure-sp-cert auth type)
     #[arg(long)]
     pub certificate_location: Option<PathBuf>,
     /// Client private key file (mtls auth type)
@@ -158,6 +158,8 @@ pub enum AuthTypeArgument {
     OauthOidc,
     #[value(name = "azure-sp-secret")]
     AzureSpSecret,
+    #[value(name = "azure-sp-cert")]
+    AzureSpCert,
 }
 
 impl AuthTypeArgument {
@@ -174,6 +176,7 @@ impl AuthTypeArgument {
             Self::Bearer => "bearer",
             Self::OauthOidc => "oauth-oidc",
             Self::AzureSpSecret => "azure-sp-secret",
+            Self::AzureSpCert => "azure-sp-cert",
         }
     }
 }

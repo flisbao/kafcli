@@ -5,7 +5,9 @@ use crate::execution_context::ExecutionContext;
 use crate::output::context_views::ContextSummary;
 use crate::output::production_warning::warn_if_production;
 use anyhow::{Context, anyhow, bail};
-use kafcli_core::config::azure_credential_model::AzureServicePrincipalSecretConfig;
+use kafcli_core::config::azure_credential_model::{
+    AzureServicePrincipalCertificateConfig, AzureServicePrincipalSecretConfig,
+};
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
     AuthConfig, AzureConnectionStringConfig, BearerAuthConfig, ConnectionContext,
@@ -101,7 +103,31 @@ fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConf
         AuthTypeArgument::AzureSpSecret => Ok(AuthConfig::AzureServicePrincipalSecret(
             build_azure_sp_secret_config(arguments)?,
         )),
+        AuthTypeArgument::AzureSpCert => Ok(AuthConfig::AzureServicePrincipalCertificate(
+            build_azure_sp_cert_config(arguments)?,
+        )),
     }
+}
+
+fn build_azure_sp_cert_config(
+    arguments: &AddContextArguments,
+) -> anyhow::Result<AzureServicePrincipalCertificateConfig> {
+    let (Some(tenant_id), Some(client_id), Some(certificate_location)) = (
+        arguments.tenant_id.clone(),
+        arguments.client_id.clone(),
+        arguments.certificate_location.clone(),
+    ) else {
+        bail!(
+            "--auth-type azure-sp-cert requires --tenant-id, --client-id and --certificate-location"
+        );
+    };
+    Ok(AzureServicePrincipalCertificateConfig {
+        tenant_id,
+        client_id,
+        certificate_location,
+        scope: arguments.scope.clone(),
+        authority_host: arguments.authority_host.clone(),
+    })
 }
 
 fn build_azure_sp_secret_config(
