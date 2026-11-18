@@ -1,5 +1,7 @@
+pub mod cluster_reader_connection;
 pub mod consume;
 pub mod context;
+pub mod groups;
 pub mod lag;
 pub mod produce;
 pub mod registry_connection;

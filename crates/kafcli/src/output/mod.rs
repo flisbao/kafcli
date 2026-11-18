@@ -1,3 +1,4 @@
+pub mod audit_views;
 pub mod collection_warnings;
 pub mod connection_report_view;
 pub mod context_views;

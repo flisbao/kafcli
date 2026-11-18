@@ -1,5 +1,6 @@
 use crate::cli::consume_arguments::ConsumeArguments;
 use crate::cli::context_arguments::ContextCommand;
+use crate::cli::groups_arguments::GroupsCommand;
 use crate::cli::lag_arguments::LagArguments;
 use crate::cli::produce_arguments::ProduceArguments;
 use crate::cli::schema_arguments::SchemaCommand;
@@ -116,4 +117,9 @@ Notes:
   redraws the screen, otherwise it prints one frame after another (one NDJSON line in JSON).
   Groups of the new consumer protocol (KIP-848) are listed without decoded members."#)]
     Lag(LagArguments),
+    /// Inspect consumer groups
+    Groups {
+        #[command(subcommand)]
+        command: GroupsCommand,
+    },
 }

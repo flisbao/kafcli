@@ -1,14 +1,11 @@
 use crate::cli::lag_arguments::{LagArguments, LagSortOrder};
+use crate::commands::cluster_reader_connection::connect_cluster_reader;
 use crate::execution_context::ExecutionContext;
 use crate::output::collection_warnings::write_collection_warnings;
 use crate::output::lag_views::{LagView, render_watch_frame};
 use crate::output::output_format::OutputFormat;
-use crate::output::production_warning::warn_if_production;
 use crate::output::renderer::{RenderedOutput, render_output};
 use kafcli_core::config::loader::load_configuration;
-use kafcli_core::config::overrides::{ContextOverrides, apply_context_overrides};
-use kafcli_core::config::selection::select_context;
-use kafcli_core::connection::client_config_builder::ConnectionSettings;
 use kafcli_core::error::CoreError;
 use kafcli_core::ops::groups::group_lag::{GroupLagReport, LagRequest, collect_group_lag};
 use kafcli_core::ops::groups::kafka_cluster_reader::KafkaClusterReader;
@@ -26,7 +23,13 @@ pub fn lag(
     resolver: &dyn SecretResolver,
     arguments: &LagArguments,
 ) -> anyhow::Result<RenderedOutput> {
-    let reader = connect_cluster_reader(execution, resolver, arguments.timeout_seconds)?;
+    let configuration = load_configuration(&execution.config_path)?;
+    let reader = connect_cluster_reader(
+        execution,
+        &configuration,
+        resolver,
+        arguments.timeout_seconds,
+    )?;
     let request = LagRequest {
         group: arguments.group.clone(),
         topic: arguments.topic.clone(),
@@ -130,30 +133,6 @@ fn write_frame(frame: &str) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "{frame}")?;
     stdout.flush()
-}
-
-/// Selects the context, warns when it is protected and opens a read-only cluster reader.
-pub fn connect_cluster_reader(
-    execution: &ExecutionContext,
-    resolver: &dyn SecretResolver,
-    timeout_seconds: u64,
-) -> anyhow::Result<KafkaClusterReader> {
-    let configuration = load_configuration(&execution.config_path)?;
-    let selected = select_context(&configuration, execution.global.context.as_deref())?;
-    warn_if_production(&selected.name, &selected.context);
-    let overrides = ContextOverrides {
-        brokers: execution.global.brokers.clone(),
-    };
-    let connection_context = apply_context_overrides(selected.context, &overrides);
-    let settings = ConnectionSettings {
-        insecure: execution.global.insecure,
-    };
-    Ok(KafkaClusterReader::connect(
-        &connection_context,
-        resolver,
-        &settings,
-        Duration::from_secs(timeout_seconds),
-    )?)
 }
 
 /// Orders the groups as `--sort` says and keeps the first `--top`.

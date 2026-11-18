@@ -10,11 +10,13 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::context_arguments::ContextCommand;
+use cli::groups_arguments::GroupsCommand;
 use cli::schema_arguments::SchemaCommand;
 use commands::consume::consume;
 use commands::context::{
     add_context, list_contexts, show_context, show_current_context, test_context, use_context,
 };
+use commands::groups::audit_groups::audit_groups;
 use commands::lag::lag;
 use commands::produce::produce;
 use commands::schema::check_compatibility::check_compatibility;
@@ -167,6 +169,11 @@ fn run(
         TopLevelCommand::Consume(consume_arguments) => {
             consume(&execution, resolver, &consume_arguments)
         }
+        TopLevelCommand::Groups { command } => match command {
+            GroupsCommand::Audit(audit_arguments) => {
+                audit_groups(&execution, resolver, &audit_arguments)
+            }
+        },
         TopLevelCommand::Lag(lag_arguments) => lag(&execution, resolver, &lag_arguments),
         TopLevelCommand::Schema { command } => match command {
             SchemaCommand::Register(register_arguments) => {

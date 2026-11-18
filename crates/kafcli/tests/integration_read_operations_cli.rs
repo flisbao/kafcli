@@ -328,3 +328,163 @@ fn unknown_group_is_reported_as_not_found() {
         .code(1)
         .stderr(predicate::str::contains("consumer group 'nope' not found"));
 }
+
+const AUDIT_SERVICE_PATTERN: &str = r"^(?P<service>[a-z]+)-consumer-\d+$";
+const MEMBER_WAIT_SECONDS: u64 = 30;
+
+/// A `kafka-console-consumer.sh` that stays in `group` until dropped. Dropping it kills the process
+/// inside the container, because killing `docker compose exec` alone leaves it running there.
+struct BackgroundConsumer {
+    child: std::process::Child,
+    client_id: String,
+}
+
+impl BackgroundConsumer {
+    fn start(topic: &str, group: &str, client_id: &str) -> Self {
+        let client_property = format!("client.id={client_id}");
+        let child = kafka_tool("kafka-console-consumer.sh")
+            .args([
+                "--topic",
+                topic,
+                "--group",
+                group,
+                "--timeout-ms",
+                "120000",
+                "--consumer-property",
+                &client_property,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Self {
+            child,
+            client_id: client_id.to_owned(),
+        }
+    }
+}
+
+impl Drop for BackgroundConsumer {
+    fn drop(&mut self) {
+        let pattern = format!("client.id={}", self.client_id);
+        let _ = ProcessCommand::new("docker")
+            .args(["compose", "-f"])
+            .arg(compose_file())
+            .args(["exec", "-T", SERVICE, "pkill", "-f", &pattern])
+            .output();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Waits until `lag` shows `expected` distinct members in `group`.
+#[allow(clippy::disallowed_methods)]
+fn wait_for_members(directory: &Path, topic: &str, group: &str, expected: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(MEMBER_WAIT_SECONDS);
+    loop {
+        let output = build_kafcli_command(directory)
+            .args([
+                "lag", "--group", group, "--topic", topic, "--output", "json",
+            ])
+            .output()
+            .unwrap();
+        if output.status.success() {
+            let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let members: std::collections::BTreeSet<String> = report["data"]["groups"][0]["topics"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|topic| topic["partitions"].as_array().into_iter().flatten())
+                .filter_map(|partition| partition["member"]["member_id"].as_str())
+                .map(str::to_owned)
+                .collect();
+            if members.len() == expected {
+                return;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "group {group} did not reach {expected} members"
+        );
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+fn audit_json(directory: &Path, group: &str) -> (Option<i32>, Value) {
+    let output = build_kafcli_command(directory)
+        .args([
+            "groups",
+            "audit",
+            "--group",
+            group,
+            "--service-pattern",
+            AUDIT_SERVICE_PATTERN,
+            "--output",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    let report = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "audit stdout is not JSON ({error}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    (output.status.code(), report)
+}
+
+fn has_finding(report: &Value, rule: &str, severity: &str) -> bool {
+    report["data"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["rule"] == rule && finding["severity"] == severity)
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn audit_detects_r1_with_two_services_in_one_group() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let topic = TopicGuard::create(&unique_name("audit"), 2);
+    let group = unique_name("audit-group");
+    let _pedidos = BackgroundConsumer::start(&topic.name, &group, "pedidos-consumer-1");
+    let _estoque = BackgroundConsumer::start(&topic.name, &group, "estoque-consumer-1");
+    wait_for_members(directory.path(), &topic.name, &group, 2);
+
+    let (code, report) = audit_json(directory.path(), &group);
+
+    assert_eq!(code, Some(1), "{report}");
+    assert!(has_finding(&report, "R1", "ERROR"), "{report}");
+    assert_eq!(report["data"]["groups_checked"], 1);
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn audit_of_clean_group_exits_zero() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let topic = TopicGuard::create(&unique_name("audit"), 2);
+    let group = unique_name("audit-group");
+    let _pedidos = BackgroundConsumer::start(&topic.name, &group, "pedidos-consumer-1");
+    wait_for_members(directory.path(), &topic.name, &group, 1);
+
+    let (code, report) = audit_json(directory.path(), &group);
+
+    assert_eq!(code, Some(0), "{report}");
+    assert!(!has_finding(&report, "R1", "ERROR"), "{report}");
+    assert!(!has_finding(&report, "R2", "ERROR"), "{report}");
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn audit_warns_r3_for_stopped_group_with_lag() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let (_topic, group) = prepare_stopped_group();
+
+    let (code, report) = audit_json(directory.path(), &group);
+
+    assert_eq!(code, Some(0), "{report}");
+    assert!(has_finding(&report, "R3", "WARNING"), "{report}");
+}
