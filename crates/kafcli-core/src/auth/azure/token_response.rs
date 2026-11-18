@@ -119,6 +119,22 @@ mod tests {
     }
 
     #[test]
+    fn expires_in_wins_over_expires_on_when_both_exist() {
+        let token =
+            parse_ok(r#"{"access_token":"t","expires_on":"2000000000","expires_in":"86399"}"#)
+                .unwrap();
+
+        assert_eq!(token.expires_at, now() + Duration::from_secs(86_399));
+    }
+
+    #[test]
+    fn accepts_string_expires_in() {
+        let token = parse_ok(r#"{"access_token":"t","expires_in":"3599"}"#).unwrap();
+
+        assert_eq!(token.expires_at, now() + Duration::from_secs(3599));
+    }
+
+    #[test]
     fn missing_expiry_is_error() {
         let error = parse_ok(r#"{"access_token":"t"}"#).unwrap_err();
 

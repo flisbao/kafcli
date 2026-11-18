@@ -1,6 +1,7 @@
 use super::azure_environment::ProcessAzureEnvironment;
 use super::azure_scope::resolve_event_hubs_scope;
 use super::azure_token_source_factory::create_azure_token_source;
+use super::managed_identity_source::SYSTEM_ASSIGNED_PRINCIPAL;
 use crate::auth::client_properties::ClientProperties;
 use crate::auth::oauth_bearer_settings::apply_oauth_bearer_settings;
 use crate::auth::provider::AuthProvider;
@@ -40,6 +41,13 @@ impl AuthProvider for AzureOAuthAuthProvider {
             AzureCredentialConfig::ServicePrincipalCertificate(config) => {
                 Some(config.client_id.clone())
             }
+            AzureCredentialConfig::WorkloadIdentity(config) => config.client_id.clone(),
+            AzureCredentialConfig::ManagedIdentity(config) => Some(
+                config
+                    .client_id
+                    .clone()
+                    .unwrap_or_else(|| SYSTEM_ASSIGNED_PRINCIPAL.to_owned()),
+            ),
         }
     }
 

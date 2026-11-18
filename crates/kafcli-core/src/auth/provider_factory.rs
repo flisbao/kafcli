@@ -40,6 +40,12 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
                 AzureCredentialConfig::ServicePrincipalCertificate(config.clone()),
             ))
         }
+        AuthConfig::AzureWorkloadIdentity(config) => Box::new(AzureOAuthAuthProvider::new(
+            AzureCredentialConfig::WorkloadIdentity(config.clone()),
+        )),
+        AuthConfig::AzureManagedIdentity(config) => Box::new(AzureOAuthAuthProvider::new(
+            AzureCredentialConfig::ManagedIdentity(config.clone()),
+        )),
     }
 }
 

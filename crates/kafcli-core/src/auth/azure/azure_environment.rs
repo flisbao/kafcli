@@ -16,6 +16,39 @@ impl AzureEnvironment for ProcessAzureEnvironment {
     }
 }
 
+/// Reads a variable and treats blank text as absent. Values are trimmed.
+pub fn read_non_blank_variable(environment: &dyn AzureEnvironment, name: &str) -> Option<String> {
+    environment
+        .read_variable(name)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Environment with only the listed variables, for tests.
+#[cfg(test)]
+pub struct FakeAzureEnvironment {
+    variables: std::collections::HashMap<String, String>,
+}
+
+#[cfg(test)]
+impl FakeAzureEnvironment {
+    pub fn new(pairs: &[(&str, &str)]) -> Self {
+        Self {
+            variables: pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl AzureEnvironment for FakeAzureEnvironment {
+    fn read_variable(&self, name: &str) -> Option<String> {
+        self.variables.get(name).cloned()
+    }
+}
+
 /// Picks the Entra ID authority: the context setting, then `AZURE_AUTHORITY_HOST`, then the public
 /// cloud. The result never ends with `/`.
 pub fn resolve_authority_host(

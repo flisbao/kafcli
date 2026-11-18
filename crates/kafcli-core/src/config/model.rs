@@ -1,6 +1,6 @@
 use crate::config::azure_credential_model::{
-    AzureCredentialConfig, AzureServicePrincipalCertificateConfig,
-    AzureServicePrincipalSecretConfig,
+    AzureCredentialConfig, AzureManagedIdentityConfig, AzureServicePrincipalCertificateConfig,
+    AzureServicePrincipalSecretConfig, AzureWorkloadIdentityConfig,
 };
 use crate::config::schema_registry_model::SchemaRegistryConfig;
 use crate::secret::reference::SecretReference;
@@ -55,6 +55,10 @@ pub enum AuthConfig {
     AzureServicePrincipalSecret(AzureServicePrincipalSecretConfig),
     #[serde(rename = "azure-sp-cert")]
     AzureServicePrincipalCertificate(AzureServicePrincipalCertificateConfig),
+    #[serde(rename = "azure-workload-identity")]
+    AzureWorkloadIdentity(AzureWorkloadIdentityConfig),
+    #[serde(rename = "azure-managed-identity")]
+    AzureManagedIdentity(AzureManagedIdentityConfig),
 }
 
 impl AuthConfig {
@@ -72,6 +76,8 @@ impl AuthConfig {
             Self::OAuthOidc(_) => "oauth-oidc",
             Self::AzureServicePrincipalSecret(_) => "azure-sp-secret",
             Self::AzureServicePrincipalCertificate(_) => "azure-sp-cert",
+            Self::AzureWorkloadIdentity(_) => "azure-workload-identity",
+            Self::AzureManagedIdentity(_) => "azure-managed-identity",
         }
     }
 
@@ -84,6 +90,12 @@ impl AuthConfig {
             Self::AzureServicePrincipalCertificate(config) => Some(
                 AzureCredentialConfig::ServicePrincipalCertificate(config.clone()),
             ),
+            Self::AzureWorkloadIdentity(config) => {
+                Some(AzureCredentialConfig::WorkloadIdentity(config.clone()))
+            }
+            Self::AzureManagedIdentity(config) => {
+                Some(AzureCredentialConfig::ManagedIdentity(config.clone()))
+            }
             Self::Plaintext
             | Self::Tls(_)
             | Self::MutualTls(_)

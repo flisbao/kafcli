@@ -124,6 +124,19 @@ fn validate_azure_credential(
             config.authority_host.as_deref(),
             protected,
         ),
+        AzureCredentialConfig::WorkloadIdentity(config) => {
+            if let Some(tenant_id) = &config.tenant_id {
+                validate_azure_tenant_id(tenant_id)?;
+            }
+            if let Some(client_id) = &config.client_id {
+                validate_azure_client_id(client_id)?;
+            }
+            validate_authority_host(config.authority_host.as_deref(), protected)
+        }
+        AzureCredentialConfig::ManagedIdentity(config) => match &config.client_id {
+            Some(client_id) => validate_azure_client_id(client_id),
+            None => Ok(()),
+        },
     }
 }
 
@@ -134,10 +147,15 @@ fn validate_azure_identifiers(
     protected: bool,
 ) -> CoreResult<()> {
     validate_azure_tenant_id(tenant_id)?;
+    validate_azure_client_id(client_id)?;
+    validate_authority_host(authority_host, protected)
+}
+
+fn validate_azure_client_id(client_id: &str) -> CoreResult<()> {
     if client_id.trim().is_empty() {
         return Err(build_validation_error("azure client_id must not be empty"));
     }
-    validate_authority_host(authority_host, protected)
+    Ok(())
 }
 
 fn validate_azure_tenant_id(tenant_id: &str) -> CoreResult<()> {
@@ -279,7 +297,9 @@ fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
         | AuthConfig::MutualTls(_)
         | AuthConfig::AzureConnectionString(_)
         | AuthConfig::AzureServicePrincipalSecret(_)
-        | AuthConfig::AzureServicePrincipalCertificate(_) => false,
+        | AuthConfig::AzureServicePrincipalCertificate(_)
+        | AuthConfig::AzureWorkloadIdentity(_)
+        | AuthConfig::AzureManagedIdentity(_) => false,
     }
 }
 
@@ -681,6 +701,53 @@ mod tests {
     fn azure_modes_always_use_tls() {
         assert!(!uses_plaintext_transport(&azure_context(None, true).auth));
         assert!(validate_context(&azure_context(None, true), false).is_ok());
+    }
+
+    #[test]
+    fn workload_identity_checks_authority_and_blank_client_only_when_present() {
+        use crate::config::azure_credential_model::{
+            AzureManagedIdentityConfig, AzureWorkloadIdentityConfig,
+        };
+        let workload = |authority: Option<&str>| {
+            context(
+                AuthConfig::AzureWorkloadIdentity(AzureWorkloadIdentityConfig {
+                    tenant_id: None,
+                    client_id: None,
+                    token_file: None,
+                    scope: None,
+                    authority_host: authority.map(str::to_string),
+                }),
+                true,
+            )
+        };
+        assert!(validate_context(&workload(None), false).is_ok());
+        assert_eq!(
+            validation_message(validate_context(
+                &workload(Some("http://example.com")),
+                false
+            )),
+            "authority_host over http:// is not allowed on a protected context"
+        );
+
+        let managed = context(
+            AuthConfig::AzureManagedIdentity(AzureManagedIdentityConfig {
+                client_id: Some("  ".to_string()),
+                scope: None,
+            }),
+            true,
+        );
+        assert_eq!(
+            validation_message(validate_context(&managed, false)),
+            "azure client_id must not be empty"
+        );
+        let system_assigned = context(
+            AuthConfig::AzureManagedIdentity(AzureManagedIdentityConfig {
+                client_id: None,
+                scope: None,
+            }),
+            true,
+        );
+        assert!(validate_context(&system_assigned, false).is_ok());
     }
 
     #[test]

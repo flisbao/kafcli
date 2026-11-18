@@ -7,6 +7,8 @@ use std::path::PathBuf;
 pub enum AzureCredentialConfig {
     ServicePrincipalSecret(AzureServicePrincipalSecretConfig),
     ServicePrincipalCertificate(AzureServicePrincipalCertificateConfig),
+    WorkloadIdentity(AzureWorkloadIdentityConfig),
+    ManagedIdentity(AzureManagedIdentityConfig),
 }
 
 impl AzureCredentialConfig {
@@ -15,6 +17,8 @@ impl AzureCredentialConfig {
         match self {
             Self::ServicePrincipalSecret(_) => "azure-sp-secret",
             Self::ServicePrincipalCertificate(_) => "azure-sp-cert",
+            Self::WorkloadIdentity(_) => "azure-workload-identity",
+            Self::ManagedIdentity(_) => "azure-managed-identity",
         }
     }
 
@@ -23,6 +27,8 @@ impl AzureCredentialConfig {
         match self {
             Self::ServicePrincipalSecret(config) => config.scope.as_deref(),
             Self::ServicePrincipalCertificate(config) => config.scope.as_deref(),
+            Self::WorkloadIdentity(config) => config.scope.as_deref(),
+            Self::ManagedIdentity(config) => config.scope.as_deref(),
         }
     }
 
@@ -30,7 +36,9 @@ impl AzureCredentialConfig {
     pub fn secret_references(&self) -> Vec<&SecretReference> {
         match self {
             Self::ServicePrincipalSecret(config) => vec![&config.secret_ref],
-            Self::ServicePrincipalCertificate(_) => Vec::new(),
+            Self::ServicePrincipalCertificate(_)
+            | Self::WorkloadIdentity(_)
+            | Self::ManagedIdentity(_) => Vec::new(),
         }
     }
 }
@@ -63,6 +71,36 @@ pub struct AzureServicePrincipalCertificateConfig {
     /// Entra ID authority, `https://`. Defaults to the public cloud or `AZURE_AUTHORITY_HOST`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authority_host: Option<String>,
+}
+
+/// Workload identity of a pod (AKS). Missing fields come from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`
+/// and `AZURE_FEDERATED_TOKEN_FILE`, which the AKS webhook injects.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureWorkloadIdentityConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// File with the projected service account token. It is read again on every token fetch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Entra ID authority, `https://`. Defaults to the public cloud or `AZURE_AUTHORITY_HOST`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_host: Option<String>,
+}
+
+/// Managed identity of the host: the user-assigned identity `client_id`, or the system-assigned one
+/// when `client_id` is absent. Tokens come from the App Service endpoint or from IMDS.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureManagedIdentityConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 #[cfg(test)]

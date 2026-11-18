@@ -6,7 +6,8 @@ use crate::output::context_views::ContextSummary;
 use crate::output::production_warning::warn_if_production;
 use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::azure_credential_model::{
-    AzureServicePrincipalCertificateConfig, AzureServicePrincipalSecretConfig,
+    AzureManagedIdentityConfig, AzureServicePrincipalCertificateConfig,
+    AzureServicePrincipalSecretConfig, AzureWorkloadIdentityConfig,
 };
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
@@ -106,6 +107,28 @@ fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConf
         AuthTypeArgument::AzureSpCert => Ok(AuthConfig::AzureServicePrincipalCertificate(
             build_azure_sp_cert_config(arguments)?,
         )),
+        AuthTypeArgument::AzureWorkloadIdentity => Ok(AuthConfig::AzureWorkloadIdentity(
+            build_azure_workload_identity_config(arguments),
+        )),
+        AuthTypeArgument::AzureManagedIdentity => Ok(AuthConfig::AzureManagedIdentity(
+            AzureManagedIdentityConfig {
+                client_id: arguments.client_id.clone(),
+                scope: arguments.scope.clone(),
+            },
+        )),
+    }
+}
+
+/// Every field is optional: the missing ones come from the AKS environment when the context is used.
+fn build_azure_workload_identity_config(
+    arguments: &AddContextArguments,
+) -> AzureWorkloadIdentityConfig {
+    AzureWorkloadIdentityConfig {
+        tenant_id: arguments.tenant_id.clone(),
+        client_id: arguments.client_id.clone(),
+        token_file: arguments.federated_token_file.clone(),
+        scope: arguments.scope.clone(),
+        authority_host: arguments.authority_host.clone(),
     }
 }
 

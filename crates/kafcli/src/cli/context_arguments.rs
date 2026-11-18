@@ -15,7 +15,7 @@ pub enum ContextCommand {
     },
     /// Add a context to the configuration
     #[command(
-        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev-oauth --brokers kafka:9093 --auth-type bearer --token-ref file:/run/secrets/kafka-token\n  kafcli context add ci-oidc --brokers kafka:9093 --auth-type oauth-oidc --token-endpoint-url https://login.example.com/oauth2/token --client-id kafcli --secret-ref env:KAFCLI_CLIENT_SECRET\n  kafcli context add prd-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-sp-secret --tenant-id <tenant> --client-id <app> --secret-ref env:PRD_SP_SECRET --protected\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
+        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev-oauth --brokers kafka:9093 --auth-type bearer --token-ref file:/run/secrets/kafka-token\n  kafcli context add ci-oidc --brokers kafka:9093 --auth-type oauth-oidc --token-endpoint-url https://login.example.com/oauth2/token --client-id kafcli --secret-ref env:KAFCLI_CLIENT_SECRET\n  kafcli context add prd-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-sp-secret --tenant-id <tenant> --client-id <app> --secret-ref env:PRD_SP_SECRET --protected\n  kafcli context add aks-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-workload-identity --protected\n  kafcli context add vm-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-managed-identity --protected\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
     )]
     Add(Box<AddContextArguments>),
     /// Make a context the current one
@@ -64,18 +64,21 @@ pub struct AddContextArguments {
     /// Token endpoint of the OpenID Connect provider, https:// (oauth-oidc auth type)
     #[arg(long)]
     pub token_endpoint_url: Option<String>,
-    /// OAuth client id (oauth-oidc, azure-sp-secret and azure-sp-cert auth types)
+    /// OAuth client id (oauth-oidc, azure-sp-secret, azure-sp-cert and azure-workload-identity auth types; user-assigned azure-managed-identity)
     #[arg(long)]
     pub client_id: Option<String>,
-    /// OAuth scope requested with the token (oauth-oidc, azure-sp-secret and azure-sp-cert auth types)
+    /// OAuth scope requested with the token (oauth-oidc and azure auth types)
     #[arg(long)]
     pub scope: Option<String>,
-    /// Directory (tenant) id of the Entra ID application (azure-sp-secret and azure-sp-cert auth types)
+    /// Directory (tenant) id of the Entra ID application (azure-sp-secret, azure-sp-cert and azure-workload-identity auth types)
     #[arg(long)]
     pub tenant_id: Option<String>,
-    /// Entra ID authority, https:// (azure-sp-secret and azure-sp-cert auth types); defaults to AZURE_AUTHORITY_HOST or the public cloud
+    /// Entra ID authority, https:// (azure-sp-secret, azure-sp-cert and azure-workload-identity auth types); defaults to AZURE_AUTHORITY_HOST or the public cloud
     #[arg(long)]
     pub authority_host: Option<String>,
+    /// Projected service account token file (azure-workload-identity auth type); defaults to AZURE_FEDERATED_TOKEN_FILE
+    #[arg(long)]
+    pub federated_token_file: Option<PathBuf>,
     /// CA certificate file used to verify the brokers and the oauth-oidc token endpoint
     #[arg(long)]
     pub ca_location: Option<PathBuf>,
@@ -160,6 +163,8 @@ pub enum AuthTypeArgument {
     AzureSpSecret,
     #[value(name = "azure-sp-cert")]
     AzureSpCert,
+    AzureWorkloadIdentity,
+    AzureManagedIdentity,
 }
 
 impl AuthTypeArgument {
@@ -177,6 +182,8 @@ impl AuthTypeArgument {
             Self::OauthOidc => "oauth-oidc",
             Self::AzureSpSecret => "azure-sp-secret",
             Self::AzureSpCert => "azure-sp-cert",
+            Self::AzureWorkloadIdentity => "azure-workload-identity",
+            Self::AzureManagedIdentity => "azure-managed-identity",
         }
     }
 }

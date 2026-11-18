@@ -772,3 +772,58 @@ fn add_azure_sp_cert_requires_certificate_location() {
             "--auth-type azure-sp-cert requires --tenant-id, --client-id and --certificate-location",
         ));
 }
+
+#[test]
+fn add_workload_identity_context_without_flags() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args([
+            "context",
+            "add",
+            "aks-eh",
+            "--brokers",
+            "prd-ns.servicebus.windows.net:9093",
+            "--auth-type",
+            "azure-workload-identity",
+        ])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json", "context", "show", "aks-eh"])
+        .assert()
+        .success();
+
+    let shown = parse_stdout_json(&assertion);
+    assert_eq!(shown["data"]["auth_type"], json!("azure-workload-identity"));
+    assert_eq!(shown["data"]["principal"], Value::Null);
+}
+
+#[test]
+fn add_managed_identity_context_without_flags_shows_system_assigned() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args([
+            "context",
+            "add",
+            "vm-eh",
+            "--brokers",
+            "prd-ns.servicebus.windows.net:9093",
+            "--auth-type",
+            "azure-managed-identity",
+        ])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .args(["--output", "json", "context", "show", "vm-eh"])
+        .assert()
+        .success();
+
+    let shown = parse_stdout_json(&assertion);
+    assert_eq!(shown["data"]["auth_type"], json!("azure-managed-identity"));
+    assert_eq!(
+        shown["data"]["principal"],
+        json!("system-assigned managed identity")
+    );
+}
