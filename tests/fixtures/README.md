@@ -1,6 +1,6 @@
 # Fixtures de integração
 
-Três brokers Redpanda (`v25.3.18`) para os testes de conexão do `kafcli`.
+Três brokers Redpanda (`v25.3.18`) e dois Apache Kafka (`4.1.1`) para os testes de integração do `kafcli`.
 
 | Serviço | Porta (host) | Admin (host) | Autenticação | Credenciais |
 |---|---|---|---|---|
@@ -8,6 +8,7 @@ Três brokers Redpanda (`v25.3.18`) para os testes de conexão do `kafcli`.
 | `redpanda-scram` | 29092 | 29644 | SASL_PLAINTEXT, SCRAM-SHA-256 | usuário `kafcli`, senha `kafcli-it-scram-secret` |
 | `redpanda-mtls` | 39092 | 39644 | TLS com certificado de cliente obrigatório | `certificates/` |
 | `kafka-oauth` | 49092 | — | SASL_PLAINTEXT, OAUTHBEARER (JWT sem assinatura, `alg: none`) | token em `KAFCLI_IT_BEARER_TOKEN`, gerado pelo próprio teste |
+| `kafka-plaintext` | 59092 | — | nenhuma | — |
 
 `kafka-oauth` é um Apache Kafka 4.1.1 em KRaft com um nó só. O listener `EXTERNAL` não tem callback handler, então o broker usa o validador "unsecured": aceita qualquer JWT com `alg: none` e `exp`. Nunca use esse broker fora de testes.
 
@@ -51,6 +52,19 @@ docker compose -f tests/fixtures/compose.yaml down -v
 - `integration_produce_consume_cli` executa o binário `kafcli` de verdade: ida e volta de `consume --output json` para `produce --input envelope --stdin`, valor não-JSON preservado como `value_base64`, fechamento precoce do pipe (`| head`) com saída 0 e stderr vazio, e neutralização de caracteres de controle na saída em tabela.
 - `integration_produce_consume` (núcleo) cobre a API de `kafcli-core`: offsets, `--count`, `--from`, truncamento, filtros, redação e o consumo sem commit.
 - `--test-threads=1` evita que os testes disputem o broker ao mesmo tempo; os testes não dependem da ordem entre si.
+
+## Testes de leitura operacional
+
+Usam só o broker `kafka-plaintext` (`127.0.0.1:59092`), um Apache Kafka 4.1.1 em KRaft com um nó só e sem autenticação. Ele existe porque traz as ferramentas oficiais (`kafka-consumer-groups.sh`, `kafka-console-consumer.sh`, `kafka-get-offsets.sh`), que servem de referência: o teste compara a saída do `kafcli lag` com `kafka-consumer-groups.sh --describe`. As ferramentas rodam dentro do container, contra o listener interno `localhost:9092`.
+
+```bash
+docker compose -f tests/fixtures/compose.yaml up -d --wait kafka-plaintext
+cargo test -p kafcli --test integration_read_operations_cli -- --ignored --test-threads=1
+docker compose -f tests/fixtures/compose.yaml down -v
+```
+
+- Cada teste cria um tópico de 3 partições, produz 30 mensagens e deixa um grupo parado com 12 mensagens commitadas (`kafka-console-consumer.sh` com `max.poll.records=1`).
+- Os tópicos têm nome único por execução e são removidos ao final, mesmo quando um teste falha. Os grupos ficam no broker até o `down -v`.
 
 ## Testes de schemas (Avro e JSON Schema)
 

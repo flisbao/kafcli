@@ -1,5 +1,6 @@
 use crate::cli::consume_arguments::ConsumeArguments;
 use crate::cli::context_arguments::ContextCommand;
+use crate::cli::lag_arguments::LagArguments;
 use crate::cli::produce_arguments::ProduceArguments;
 use crate::cli::schema_arguments::SchemaCommand;
 use crate::output::output_format::OutputFormat;
@@ -97,4 +98,18 @@ Notes:
         #[command(subcommand)]
         command: SchemaCommand,
     },
+    /// Show the consumer lag of consumer groups
+    #[command(after_help = r#"Examples:
+  kafcli lag --group pedidos-service --topic pedidos --max-lag 1000
+  kafcli lag --all-groups --sort lag --top 20
+  kafcli lag --group pedidos-service --output json
+
+Notes:
+  Reads only: nothing is committed and no group is joined.
+  Without --topic, a group with members shows the topics it is assigned or subscribed to; a group
+  without members shows every topic where it has a committed offset.
+  A partition without a committed offset shows `-` (null in JSON) and is not counted in the totals.
+  --max-lag compares the total lag of each group and exits with code 2 after printing the report.
+  Groups of the new consumer protocol (KIP-848) are listed without decoded members."#)]
+    Lag(LagArguments),
 }

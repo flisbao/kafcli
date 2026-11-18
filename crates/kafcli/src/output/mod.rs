@@ -1,6 +1,8 @@
+pub mod collection_warnings;
 pub mod connection_report_view;
 pub mod context_views;
 pub mod envelope_writer;
+pub mod lag_views;
 pub mod output_format;
 pub mod produce_dry_run_view;
 pub mod produce_report_view;

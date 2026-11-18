@@ -15,6 +15,7 @@ use commands::consume::consume;
 use commands::context::{
     add_context, list_contexts, show_context, show_current_context, test_context, use_context,
 };
+use commands::lag::lag;
 use commands::produce::produce;
 use commands::schema::check_compatibility::check_compatibility;
 use commands::schema::get_schema::get_schema;
@@ -166,6 +167,7 @@ fn run(
         TopLevelCommand::Consume(consume_arguments) => {
             consume(&execution, resolver, &consume_arguments)
         }
+        TopLevelCommand::Lag(lag_arguments) => lag(&execution, resolver, &lag_arguments),
         TopLevelCommand::Schema { command } => match command {
             SchemaCommand::Register(register_arguments) => {
                 register_schema(&execution, resolver, &TerminalPrompter, &register_arguments)
