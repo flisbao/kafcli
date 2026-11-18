@@ -1,3 +1,4 @@
+pub mod azure;
 pub mod azure_connection_string_provider;
 pub mod bearer_provider;
 pub mod client_properties;

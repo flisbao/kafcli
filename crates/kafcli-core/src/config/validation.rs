@@ -1,3 +1,4 @@
+use crate::config::azure_credential_model::AzureCredentialConfig;
 use crate::config::model::{AuthConfig, ConnectionContext, OAuthOidcAuthConfig};
 use crate::config::schema_registry_model::{
     AzureRegistryConfig, RegistryAuthConfig, SchemaRegistryConfig,
@@ -25,6 +26,9 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
     }
     if let AuthConfig::OAuthOidc(oidc) = &context.auth {
         validate_token_endpoint(oidc, context.protected)?;
+    }
+    if let Some(credential) = context.auth.azure_credential() {
+        validate_azure_credential(&credential, context.protected)?;
     }
     if !context.protected {
         return Ok(());
@@ -110,6 +114,74 @@ fn validate_token_endpoint(config: &OAuthOidcAuthConfig, protected: bool) -> Cor
     Ok(())
 }
 
+/// Checks the Entra ID identifiers and the authority host of an Azure credential.
+fn validate_azure_credential(
+    credential: &AzureCredentialConfig,
+    protected: bool,
+) -> CoreResult<()> {
+    match credential {
+        AzureCredentialConfig::ServicePrincipalSecret(config) => {
+            validate_azure_tenant_id(&config.tenant_id)?;
+            if config.client_id.trim().is_empty() {
+                return Err(build_validation_error("azure client_id must not be empty"));
+            }
+            validate_authority_host(config.authority_host.as_deref(), protected)
+        }
+    }
+}
+
+fn validate_azure_tenant_id(tenant_id: &str) -> CoreResult<()> {
+    if tenant_id.trim().is_empty() {
+        return Err(build_validation_error("azure tenant_id must not be empty"));
+    }
+    let only_allowed = tenant_id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '.' || character == '-');
+    if !only_allowed {
+        return Err(build_validation_error(
+            "azure tenant_id may contain only letters, digits, '.' and '-'",
+        ));
+    }
+    Ok(())
+}
+
+/// The authority must be HTTPS. Plain HTTP is accepted only for loopback hosts on an unprotected context.
+fn validate_authority_host(authority_host: Option<&str>, protected: bool) -> CoreResult<()> {
+    let Some(url) = authority_host else {
+        return Ok(());
+    };
+    if is_https_url(url) {
+        return Ok(());
+    }
+    if !is_plain_http_url(url) {
+        return Err(build_validation_error(
+            "authority_host must start with https://",
+        ));
+    }
+    if protected {
+        return Err(build_validation_error(
+            "authority_host over http:// is not allowed on a protected context",
+        ));
+    }
+    if !matches!(url_host(url), "127.0.0.1" | "localhost") {
+        return Err(build_validation_error(
+            "authority_host over http:// is only allowed for 127.0.0.1 or localhost",
+        ));
+    }
+    Ok(())
+}
+
+/// Host part of an `http://` or `https://` URL, without port or path.
+fn url_host(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = after_scheme
+        .split_once('/')
+        .map_or(after_scheme, |(authority, _)| authority);
+    authority
+        .split_once(':')
+        .map_or(authority, |(host, _)| host)
+}
+
 fn validate_azure_registry(azure: &AzureRegistryConfig) -> CoreResult<()> {
     if azure.group.trim().is_empty() {
         return Err(build_validation_error(
@@ -172,13 +244,15 @@ fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
         AuthConfig::Plaintext
         | AuthConfig::Tls(_)
         | AuthConfig::MutualTls(_)
-        | AuthConfig::AzureConnectionString(_) => false,
+        | AuthConfig::AzureConnectionString(_)
+        | AuthConfig::AzureServicePrincipalSecret(_) => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::azure_credential_model::AzureServicePrincipalSecretConfig;
     use crate::config::model::{
         BearerAuthConfig, OAuthOidcAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
     };
@@ -480,6 +554,67 @@ mod tests {
                 "url {url}"
             );
         }
+    }
+
+    fn azure_context(authority_host: Option<&str>, protected: bool) -> ConnectionContext {
+        context(
+            AuthConfig::AzureServicePrincipalSecret(AzureServicePrincipalSecretConfig {
+                tenant_id: "00000000-0000-0000-0000-000000000000".to_string(),
+                client_id: "app".to_string(),
+                secret_ref: "env:PRD_SP_SECRET".parse::<SecretReference>().unwrap(),
+                scope: None,
+                authority_host: authority_host.map(str::to_string),
+            }),
+            protected,
+        )
+    }
+
+    #[test]
+    fn http_authority_only_on_loopback_and_unprotected() {
+        assert!(validate_context(&azure_context(Some("http://127.0.0.1:1"), false), false).is_ok());
+        let message = validation_message(validate_context(
+            &azure_context(Some("http://127.0.0.1:1"), true),
+            false,
+        ));
+        assert_eq!(
+            message,
+            "authority_host over http:// is not allowed on a protected context"
+        );
+        let message = validation_message(validate_context(
+            &azure_context(Some("http://example.com"), false),
+            false,
+        ));
+        assert_eq!(
+            message,
+            "authority_host over http:// is only allowed for 127.0.0.1 or localhost"
+        );
+    }
+
+    #[test]
+    fn azure_tenant_and_client_are_checked() {
+        let mut blank_client = azure_context(None, false);
+        if let AuthConfig::AzureServicePrincipalSecret(config) = &mut blank_client.auth {
+            config.client_id = "  ".to_string();
+        }
+        assert_eq!(
+            validation_message(validate_context(&blank_client, false)),
+            "azure client_id must not be empty"
+        );
+
+        let mut bad_tenant = azure_context(None, false);
+        if let AuthConfig::AzureServicePrincipalSecret(config) = &mut bad_tenant.auth {
+            config.tenant_id = "tenant/../x".to_string();
+        }
+        assert_eq!(
+            validation_message(validate_context(&bad_tenant, false)),
+            "azure tenant_id may contain only letters, digits, '.' and '-'"
+        );
+    }
+
+    #[test]
+    fn azure_modes_always_use_tls() {
+        assert!(!uses_plaintext_transport(&azure_context(None, true).auth));
+        assert!(validate_context(&azure_context(None, true), false).is_ok());
     }
 
     #[test]

@@ -677,3 +677,71 @@ fn oidc_show_lists_secret_reference_only() {
     let stdout = String::from_utf8_lossy(&assertion.get_output().stdout).to_string();
     assert!(!stdout.contains("s3cret-client-value"));
 }
+
+#[test]
+fn add_azure_sp_secret_context_requires_flags() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args([
+            "context",
+            "add",
+            "prd-eh",
+            "--brokers",
+            "prd-ns.servicebus.windows.net:9093",
+        ])
+        .args([
+            "--auth-type",
+            "azure-sp-secret",
+            "--client-id",
+            "app",
+            "--secret-ref",
+            "env:PRD_SP_SECRET",
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--auth-type azure-sp-secret requires --tenant-id, --client-id and --secret-ref",
+        ));
+}
+
+#[test]
+fn azure_sp_secret_show_lists_reference() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args([
+            "context",
+            "add",
+            "prd-eh",
+            "--brokers",
+            "prd-ns.servicebus.windows.net:9093",
+        ])
+        .args([
+            "--auth-type",
+            "azure-sp-secret",
+            "--tenant-id",
+            "tenant-1",
+            "--client-id",
+            "app",
+            "--secret-ref",
+            "env:PRD_SP_SECRET",
+            "--protected",
+        ])
+        .assert()
+        .success();
+
+    let assertion = build_kafcli_command(directory.path())
+        .env("PRD_SP_SECRET", "s3cret-value")
+        .args(["--output", "json", "context", "show", "prd-eh"])
+        .assert()
+        .success();
+
+    let shown = parse_stdout_json(&assertion);
+    assert_eq!(shown["data"]["auth_type"], json!("azure-sp-secret"));
+    assert_eq!(shown["data"]["principal"], json!("app"));
+    assert_eq!(
+        shown["data"]["secret_references"],
+        json!(["env:PRD_SP_SECRET"])
+    );
+    assert!(!String::from_utf8_lossy(&assertion.get_output().stdout).contains("s3cret-value"));
+}

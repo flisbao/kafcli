@@ -1,3 +1,4 @@
+use super::azure::azure_oauth_provider::AzureOAuthAuthProvider;
 use super::azure_connection_string_provider::AzureConnectionStringAuthProvider;
 use super::bearer_provider::BearerAuthProvider;
 use super::mutual_tls_provider::MutualTlsAuthProvider;
@@ -7,6 +8,7 @@ use super::provider::AuthProvider;
 use super::sasl_plain_provider::SaslPlainAuthProvider;
 use super::sasl_scram_provider::{SaslScramAuthProvider, ScramMechanism};
 use super::tls_provider::TlsAuthProvider;
+use crate::config::azure_credential_model::AzureCredentialConfig;
 use crate::config::model::AuthConfig;
 
 /// Creates the provider for a context's authentication mode.
@@ -30,6 +32,9 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
         }
         AuthConfig::Bearer(config) => Box::new(BearerAuthProvider::new(config.clone())),
         AuthConfig::OAuthOidc(config) => Box::new(OAuthOidcAuthProvider::new(config.clone())),
+        AuthConfig::AzureServicePrincipalSecret(config) => Box::new(AzureOAuthAuthProvider::new(
+            AzureCredentialConfig::ServicePrincipalSecret(config.clone()),
+        )),
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod azure_credential_model;
 pub mod error_description;
 pub mod loader;
 pub mod model;

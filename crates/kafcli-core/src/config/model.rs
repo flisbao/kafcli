@@ -1,3 +1,6 @@
+use crate::config::azure_credential_model::{
+    AzureCredentialConfig, AzureServicePrincipalSecretConfig,
+};
 use crate::config::schema_registry_model::SchemaRegistryConfig;
 use crate::secret::reference::SecretReference;
 use serde::{Deserialize, Serialize};
@@ -47,6 +50,8 @@ pub enum AuthConfig {
     Bearer(BearerAuthConfig),
     #[serde(rename = "oauth-oidc")]
     OAuthOidc(OAuthOidcAuthConfig),
+    #[serde(rename = "azure-sp-secret")]
+    AzureServicePrincipalSecret(AzureServicePrincipalSecretConfig),
 }
 
 impl AuthConfig {
@@ -62,6 +67,25 @@ impl AuthConfig {
             Self::AzureConnectionString(_) => "azure-connection-string",
             Self::Bearer(_) => "bearer",
             Self::OAuthOidc(_) => "oauth-oidc",
+            Self::AzureServicePrincipalSecret(_) => "azure-sp-secret",
+        }
+    }
+
+    /// Azure credential of this context, rebuilt from its variant. `None` for other modes.
+    pub fn azure_credential(&self) -> Option<AzureCredentialConfig> {
+        match self {
+            Self::AzureServicePrincipalSecret(config) => Some(
+                AzureCredentialConfig::ServicePrincipalSecret(config.clone()),
+            ),
+            Self::Plaintext
+            | Self::Tls(_)
+            | Self::MutualTls(_)
+            | Self::SaslPlain(_)
+            | Self::SaslScram256(_)
+            | Self::SaslScram512(_)
+            | Self::AzureConnectionString(_)
+            | Self::Bearer(_)
+            | Self::OAuthOidc(_) => None,
         }
     }
 }
