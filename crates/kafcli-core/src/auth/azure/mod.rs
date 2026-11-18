@@ -1,8 +1,10 @@
+pub mod azure_cli_source;
 pub mod azure_environment;
 pub mod azure_oauth_provider;
 pub mod azure_scope;
 pub mod azure_token_source_factory;
 pub mod client_assertion;
+pub mod default_credential_chain;
 pub mod entra_token_client;
 pub mod managed_identity_source;
 pub mod service_principal_certificate_source;

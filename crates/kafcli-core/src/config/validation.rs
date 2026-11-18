@@ -137,6 +137,19 @@ fn validate_azure_credential(
             Some(client_id) => validate_azure_client_id(client_id),
             None => Ok(()),
         },
+        AzureCredentialConfig::AzureCli(config) => match &config.tenant_id {
+            Some(tenant_id) => validate_azure_tenant_id(tenant_id),
+            None => Ok(()),
+        },
+        AzureCredentialConfig::Default(config) => {
+            if let Some(tenant_id) = &config.tenant_id {
+                validate_azure_tenant_id(tenant_id)?;
+            }
+            if let Some(client_id) = &config.client_id {
+                validate_azure_client_id(client_id)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -299,7 +312,9 @@ fn uses_plaintext_transport(auth: &AuthConfig) -> bool {
         | AuthConfig::AzureServicePrincipalSecret(_)
         | AuthConfig::AzureServicePrincipalCertificate(_)
         | AuthConfig::AzureWorkloadIdentity(_)
-        | AuthConfig::AzureManagedIdentity(_) => false,
+        | AuthConfig::AzureManagedIdentity(_)
+        | AuthConfig::AzureCli(_)
+        | AuthConfig::AzureDefault(_) => false,
     }
 }
 

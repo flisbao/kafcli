@@ -6,8 +6,9 @@ use crate::output::context_views::ContextSummary;
 use crate::output::production_warning::warn_if_production;
 use anyhow::{Context, anyhow, bail};
 use kafcli_core::config::azure_credential_model::{
-    AzureManagedIdentityConfig, AzureServicePrincipalCertificateConfig,
-    AzureServicePrincipalSecretConfig, AzureWorkloadIdentityConfig,
+    AzureCliConfig, AzureDefaultConfig, AzureManagedIdentityConfig,
+    AzureServicePrincipalCertificateConfig, AzureServicePrincipalSecretConfig,
+    AzureWorkloadIdentityConfig,
 };
 use kafcli_core::config::loader::load_configuration_file_only;
 use kafcli_core::config::model::{
@@ -116,6 +117,15 @@ fn build_auth_config(arguments: &AddContextArguments) -> anyhow::Result<AuthConf
                 scope: arguments.scope.clone(),
             },
         )),
+        AuthTypeArgument::AzureCli => Ok(AuthConfig::AzureCli(AzureCliConfig {
+            tenant_id: arguments.tenant_id.clone(),
+            scope: arguments.scope.clone(),
+        })),
+        AuthTypeArgument::AzureDefault => Ok(AuthConfig::AzureDefault(AzureDefaultConfig {
+            tenant_id: arguments.tenant_id.clone(),
+            client_id: arguments.client_id.clone(),
+            scope: arguments.scope.clone(),
+        })),
     }
 }
 

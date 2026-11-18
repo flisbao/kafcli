@@ -1,4 +1,5 @@
 use super::azure_environment::{AzureEnvironment, read_non_blank_variable};
+use super::default_credential_chain::{CredentialLink, LinkFailure};
 use super::token_http_client::{TOKEN_REQUEST_TIMEOUT, TokenHttpClient};
 use super::token_response::parse_token_response;
 use crate::auth::token::access_token::AccessToken;
@@ -14,6 +15,13 @@ pub const DEFAULT_IMDS_BASE_URL: &str = "http://169.254.169.254";
 
 /// Principal shown for a managed identity without a `client_id`.
 pub const SYSTEM_ASSIGNED_PRINCIPAL: &str = "system-assigned managed identity";
+
+const SOURCE_NAME: &str = "azure-managed-identity";
+
+/// The managed identity takes a resource, not a scope: the `/.default` suffix is dropped.
+pub(crate) fn resource_for_scope(scope: &str) -> String {
+    scope.strip_suffix("/.default").unwrap_or(scope).to_owned()
+}
 
 const IMDS_TOKEN_PATH: &str = "/metadata/identity/oauth2/token";
 const IMDS_API_VERSION: &str = "2018-02-01";
@@ -71,19 +79,25 @@ impl ManagedIdentityTokenSource {
     }
 }
 
-impl TokenSource for ManagedIdentityTokenSource {
-    fn fetch_access_token(&self) -> CoreResult<AccessToken> {
-        let http = TokenHttpClient::new(self.probe_timeout.unwrap_or(TOKEN_REQUEST_TIMEOUT))?;
+impl ManagedIdentityTokenSource {
+    /// IMDS that cannot be reached, or answers 400 or 404 (no identity on this host), is
+    /// unavailable. Any other answer is an error. The App Service endpoint has no such case.
+    fn fetch_token_or_classify(&self) -> Result<AccessToken, LinkFailure> {
+        let http = TokenHttpClient::new(self.probe_timeout.unwrap_or(TOKEN_REQUEST_TIMEOUT))
+            .map_err(LinkFailure::Error)?;
         let now = SystemTime::now();
         match self.app_service_endpoint() {
             Some((endpoint, header)) => {
                 let url = format!("{endpoint}?{}", self.query(APP_SERVICE_API_VERSION));
-                let response = http.get(
-                    &url,
-                    &[(APP_SERVICE_HEADER_NAME, header.expose_secret())],
-                    &[&header],
-                )?;
+                let response = http
+                    .get(
+                        &url,
+                        &[(APP_SERVICE_HEADER_NAME, header.expose_secret())],
+                        &[&header],
+                    )
+                    .map_err(LinkFailure::Error)?;
                 parse_token_response(response.status, &response.body, now, &[&header])
+                    .map_err(LinkFailure::Error)
             }
             None => {
                 let url = format!(
@@ -91,14 +105,38 @@ impl TokenSource for ManagedIdentityTokenSource {
                     self.imds_base_url.trim_end_matches('/'),
                     self.query(IMDS_API_VERSION)
                 );
-                let response = http.get(&url, &[("Metadata", "true")], &[])?;
-                parse_token_response(response.status, &response.body, now, &[])
+                let response = http
+                    .get(&url, &[("Metadata", "true")], &[])
+                    .map_err(LinkFailure::unavailable_from)?;
+                match parse_token_response(response.status, &response.body, now, &[]) {
+                    Err(error) if matches!(response.status, 400 | 404) => {
+                        Err(LinkFailure::unavailable_from(error))
+                    }
+                    other => other.map_err(LinkFailure::Error),
+                }
             }
         }
     }
+}
+
+impl CredentialLink for ManagedIdentityTokenSource {
+    fn fetch_link_token(&self) -> Result<AccessToken, LinkFailure> {
+        self.fetch_token_or_classify()
+    }
+
+    fn source_name(&self) -> &'static str {
+        SOURCE_NAME
+    }
+}
+
+impl TokenSource for ManagedIdentityTokenSource {
+    fn fetch_access_token(&self) -> CoreResult<AccessToken> {
+        self.fetch_token_or_classify()
+            .map_err(LinkFailure::into_error)
+    }
 
     fn describe_source(&self) -> &'static str {
-        "azure-managed-identity"
+        SOURCE_NAME
     }
 }
 

@@ -1,6 +1,10 @@
+use super::azure_cli_source::AzureCliTokenSource;
 use super::azure_environment::{AzureEnvironment, read_non_blank_variable, resolve_authority_host};
 use super::client_assertion::ClientCertificate;
-use super::managed_identity_source::{DEFAULT_IMDS_BASE_URL, ManagedIdentityTokenSource};
+use super::default_credential_chain::DefaultCredentialChain;
+use super::managed_identity_source::{
+    DEFAULT_IMDS_BASE_URL, ManagedIdentityTokenSource, resource_for_scope,
+};
 use super::service_principal_certificate_source::ServicePrincipalCertificateTokenSource;
 use super::service_principal_secret_source::ServicePrincipalSecretTokenSource;
 use super::token_http_client::{TOKEN_REQUEST_TIMEOUT, TokenHttpClient};
@@ -15,15 +19,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Settings of a workload identity once the context and the AKS environment are merged.
-struct WorkloadIdentitySettings {
-    tenant_id: String,
-    client_id: String,
-    token_file: PathBuf,
+pub(crate) struct WorkloadIdentitySettings {
+    pub(crate) tenant_id: String,
+    pub(crate) client_id: String,
+    pub(crate) token_file: PathBuf,
 }
 
 /// Context fields win; missing ones come from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
 /// `AZURE_FEDERATED_TOKEN_FILE`. Any field still missing fails before any request.
-fn resolve_workload_identity_settings(
+pub(crate) fn resolve_workload_identity_settings(
     config: &AzureWorkloadIdentityConfig,
     environment: &dyn AzureEnvironment,
 ) -> CoreResult<WorkloadIdentitySettings> {
@@ -56,7 +60,7 @@ fn non_blank_text(value: Option<&str>) -> Option<String> {
 
 /// Resolves the authority and checks it before any request leaves the process. A context setting
 /// may use loopback HTTP (validated as for contexts); the environment value must be HTTPS.
-fn checked_authority_host(
+pub(crate) fn checked_authority_host(
     configured: Option<&str>,
     environment: &dyn AzureEnvironment,
 ) -> CoreResult<String> {
@@ -125,16 +129,29 @@ pub fn create_azure_token_source(
             Ok(Arc::new(CachedTokenSource::new(Box::new(source))))
         }
         AzureCredentialConfig::ManagedIdentity(config) => {
-            // The managed identity takes a resource, not a scope: the `/.default` suffix is dropped.
-            let resource = scope.strip_suffix("/.default").unwrap_or(scope).to_owned();
             let source = ManagedIdentityTokenSource::with_endpoints(
                 config.client_id.clone(),
-                resource,
+                resource_for_scope(scope),
                 environment,
                 DEFAULT_IMDS_BASE_URL.to_owned(),
                 None,
             );
             Ok(Arc::new(CachedTokenSource::new(Box::new(source))))
+        }
+        AzureCredentialConfig::AzureCli(config) => {
+            let source = AzureCliTokenSource::new(config.tenant_id.clone(), scope.to_owned());
+            Ok(Arc::new(CachedTokenSource::new(Box::new(source))))
+        }
+        AzureCredentialConfig::Default(config) => {
+            let chain = DefaultCredentialChain::new(
+                config,
+                scope,
+                environment,
+                None,
+                DEFAULT_IMDS_BASE_URL.to_owned(),
+                AzureCliTokenSource::new(config.tenant_id.clone(), scope.to_owned()),
+            )?;
+            Ok(Arc::new(CachedTokenSource::new(Box::new(chain))))
         }
     }
 }

@@ -45,7 +45,9 @@ fn collect_secret_references(auth: &AuthConfig) -> Vec<String> {
         AuthConfig::AzureServicePrincipalSecret(config) => vec![&config.secret_ref],
         AuthConfig::AzureServicePrincipalCertificate(_)
         | AuthConfig::AzureWorkloadIdentity(_)
-        | AuthConfig::AzureManagedIdentity(_) => Vec::new(),
+        | AuthConfig::AzureManagedIdentity(_)
+        | AuthConfig::AzureCli(_)
+        | AuthConfig::AzureDefault(_) => Vec::new(),
     };
     references.into_iter().map(ToString::to_string).collect()
 }

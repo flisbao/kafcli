@@ -48,6 +48,8 @@ impl AuthProvider for AzureOAuthAuthProvider {
                     .clone()
                     .unwrap_or_else(|| SYSTEM_ASSIGNED_PRINCIPAL.to_owned()),
             ),
+            AzureCredentialConfig::AzureCli(_) => None,
+            AzureCredentialConfig::Default(config) => config.client_id.clone(),
         }
     }
 

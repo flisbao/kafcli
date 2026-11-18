@@ -9,6 +9,8 @@ pub enum AzureCredentialConfig {
     ServicePrincipalCertificate(AzureServicePrincipalCertificateConfig),
     WorkloadIdentity(AzureWorkloadIdentityConfig),
     ManagedIdentity(AzureManagedIdentityConfig),
+    AzureCli(AzureCliConfig),
+    Default(AzureDefaultConfig),
 }
 
 impl AzureCredentialConfig {
@@ -19,6 +21,8 @@ impl AzureCredentialConfig {
             Self::ServicePrincipalCertificate(_) => "azure-sp-cert",
             Self::WorkloadIdentity(_) => "azure-workload-identity",
             Self::ManagedIdentity(_) => "azure-managed-identity",
+            Self::AzureCli(_) => "azure-cli",
+            Self::Default(_) => "azure-default",
         }
     }
 
@@ -29,6 +33,8 @@ impl AzureCredentialConfig {
             Self::ServicePrincipalCertificate(config) => config.scope.as_deref(),
             Self::WorkloadIdentity(config) => config.scope.as_deref(),
             Self::ManagedIdentity(config) => config.scope.as_deref(),
+            Self::AzureCli(config) => config.scope.as_deref(),
+            Self::Default(config) => config.scope.as_deref(),
         }
     }
 
@@ -38,9 +44,35 @@ impl AzureCredentialConfig {
             Self::ServicePrincipalSecret(config) => vec![&config.secret_ref],
             Self::ServicePrincipalCertificate(_)
             | Self::WorkloadIdentity(_)
-            | Self::ManagedIdentity(_) => Vec::new(),
+            | Self::ManagedIdentity(_)
+            | Self::AzureCli(_)
+            | Self::Default(_) => Vec::new(),
         }
     }
+}
+
+/// Login of the Azure CLI (`az login`). The token comes from `az account get-access-token`.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureCliConfig {
+    /// Passed to `az` as `--tenant` when present; otherwise the CLI's default tenant is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// Credential chain of the Azure SDK: environment, workload identity, managed identity and the
+/// Azure CLI, tried in that order. `tenant_id` and `client_id` here override the environment.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AzureDefaultConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Entra ID service principal that authenticates with a client secret (client credentials grant).

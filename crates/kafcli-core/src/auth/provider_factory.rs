@@ -46,6 +46,12 @@ pub fn create_auth_provider(auth: &AuthConfig) -> Box<dyn AuthProvider> {
         AuthConfig::AzureManagedIdentity(config) => Box::new(AzureOAuthAuthProvider::new(
             AzureCredentialConfig::ManagedIdentity(config.clone()),
         )),
+        AuthConfig::AzureCli(config) => Box::new(AzureOAuthAuthProvider::new(
+            AzureCredentialConfig::AzureCli(config.clone()),
+        )),
+        AuthConfig::AzureDefault(config) => Box::new(AzureOAuthAuthProvider::new(
+            AzureCredentialConfig::Default(config.clone()),
+        )),
     }
 }
 
