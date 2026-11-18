@@ -1,7 +1,7 @@
 //! `ClusterOffsetsReader` backed by librdkafka consumers that never join, assign or commit.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rdkafka::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
@@ -51,6 +51,15 @@ impl KafkaClusterReader {
             family: detect_broker_family(context),
             timeout,
         })
+    }
+
+    /// Waits `interval` while polling the metadata consumer, so a long `--watch` keeps serving its
+    /// OAUTHBEARER token refreshes; librdkafka only hands them out from `poll`. The consumer has no
+    /// assignment, so a poll returns no message.
+    pub fn wait_serving_client_events(&self, interval: Duration) {
+        wait_serving_client_events(interval, Instant::now, |slice| {
+            let _ = self.metadata_consumer.poll(slice);
+        });
     }
 
     fn map_error(
@@ -212,4 +221,75 @@ fn describe_member(group: &str, member: &GroupMemberInfo, decodes_members: bool)
 
 fn warn_undecodable(group: &str, member_id: &str, field: &str, error: &CoreError) {
     tracing::warn!(group, member_id, field, %error, "group member metadata could not be decoded");
+}
+
+/// Longest single poll while waiting, so the wait ends close to its deadline.
+const EVENT_POLL_SLICE: Duration = Duration::from_secs(1);
+
+/// Waits `interval` by calling `poll_once` with slices of at most `EVENT_POLL_SLICE` until `now`
+/// passes the deadline. A poll returns early when the client has an event, so the deadline is read
+/// from the clock and not from the sum of the slices.
+pub(crate) fn wait_serving_client_events(
+    interval: Duration,
+    now: impl Fn() -> Instant,
+    mut poll_once: impl FnMut(Duration),
+) {
+    let deadline = now() + interval;
+    loop {
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return;
+        }
+        poll_once(remaining.min(EVENT_POLL_SLICE));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn wait_polls_in_slices_until_the_deadline() {
+        let start = Instant::now();
+        let clock = Cell::new(start);
+        let polls = RefCell::new(Vec::new());
+
+        wait_serving_client_events(
+            Duration::from_millis(2500),
+            || clock.get(),
+            |slice| {
+                polls.borrow_mut().push(slice);
+                clock.set(clock.get() + slice);
+            },
+        );
+
+        assert_eq!(
+            polls.into_inner(),
+            vec![
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+                Duration::from_millis(500)
+            ]
+        );
+    }
+
+    #[test]
+    fn early_returning_polls_keep_waiting() {
+        let start = Instant::now();
+        let clock = Cell::new(start);
+        let polls = Cell::new(0);
+
+        wait_serving_client_events(
+            Duration::from_secs(1),
+            || clock.get(),
+            |_| {
+                polls.set(polls.get() + 1);
+                clock.set(clock.get() + Duration::from_millis(250));
+            },
+        );
+
+        assert_eq!(polls.get(), 4);
+        assert!(clock.get() >= start + Duration::from_secs(1));
+    }
 }

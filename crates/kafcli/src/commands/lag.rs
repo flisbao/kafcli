@@ -44,11 +44,13 @@ pub fn lag(
         );
     }
     let mut report = collect_group_lag(&reader, &request)?;
-    order_groups(&mut report, arguments.sort, arguments.top);
-    let trailing_error = arguments
-        .max_lag
-        .and_then(|maximum| check_max_lag(&report, maximum))
-        .map(anyhow::Error::new);
+    let trailing_error = apply_display_order(
+        &mut report,
+        arguments.sort,
+        arguments.top,
+        arguments.max_lag,
+    )
+    .map(anyhow::Error::new);
     let output_format = execution.global.output;
     write_collection_warnings(&report.warnings, output_format);
     let view = LagView {
@@ -62,7 +64,8 @@ pub fn lag(
     })
 }
 
-/// Samples the lag every `interval` until stopped, keeping only the previous sample.
+/// Samples the lag every `interval` until stopped, keeping only the previous sample. Between samples
+/// it polls the reader's client instead of sleeping, so OAuth tokens keep being refreshed.
 ///
 /// Each frame goes to stdout as soon as it is rendered. The first sample above `--max-lag` ends the
 /// run with `LimitExceeded` after its frame; a closed stdout pipe ends it as a success.
@@ -78,17 +81,22 @@ fn watch_lag(
     loop {
         let sampled_at = Instant::now();
         let mut report = collect_group_lag(reader, request)?;
-        order_groups(&mut report, arguments.sort, arguments.top);
+        let limit_error = apply_display_order(
+            &mut report,
+            arguments.sort,
+            arguments.top,
+            arguments.max_lag,
+        );
         let changes = previous
             .as_ref()
             .map(|(before, before_at)| {
                 compare_lag_samples(before, &report, sampled_at.duration_since(*before_at))
             })
             .unwrap_or_default();
-        let limit_error = arguments
-            .max_lag
-            .and_then(|maximum| check_max_lag(&report, maximum));
-        write_collection_warnings(&report.warnings, output_format);
+        let warnings_in_frame = output_format == OutputFormat::Table && is_terminal;
+        if !warnings_in_frame {
+            write_collection_warnings(&report.warnings, output_format);
+        }
         let view = LagView {
             groups: report.groups,
             warnings: report.warnings,
@@ -115,24 +123,30 @@ fn watch_lag(
             },
             sampled_at,
         ));
-        wait_for_next_sample(interval);
+        reader.wait_serving_client_events(interval);
     }
-}
-
-/// The pause between `--watch` samples is what the user asked for, not a wait on a client, so no
-/// client timeout can replace it (ADR 0006).
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the --watch interval is a user-chosen pause between samples, see ADR 0006"
-)]
-fn wait_for_next_sample(interval: Duration) {
-    std::thread::sleep(interval);
 }
 
 fn write_frame(frame: &str) -> io::Result<()> {
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "{frame}")?;
     stdout.flush()
+}
+
+/// Orders the groups, checks `--max-lag` over every group, then keeps the first `--top`, so a
+/// group cut from the output still trips the limit.
+pub fn apply_display_order(
+    report: &mut GroupLagReport,
+    sort: LagSortOrder,
+    top: Option<u32>,
+    max_lag: Option<u64>,
+) -> Option<CoreError> {
+    order_groups(report, sort, None);
+    let limit_error = max_lag.and_then(|maximum| check_max_lag(report, maximum));
+    if let Some(top) = top {
+        report.groups.truncate(top as usize);
+    }
+    limit_error
 }
 
 /// Orders the groups as `--sort` says and keeps the first `--top`.
@@ -199,6 +213,24 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "limit exceeded: group 'b' lag 1500 exceeds --max-lag 1000"
+        );
+    }
+
+    #[test]
+    fn max_lag_checks_groups_cut_by_top() {
+        let mut report = report(vec![group("a", 1), group("b", 2), group("z", 5000)]);
+
+        let error = apply_display_order(&mut report, LagSortOrder::Group, Some(2), Some(1000));
+
+        let names: Vec<&str> = report
+            .groups
+            .iter()
+            .map(|group| group.group.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
+        assert_eq!(
+            error.map(|error| error.to_string()).as_deref(),
+            Some("limit exceeded: group 'z' lag 5000 exceeds --max-lag 1000")
         );
     }
 

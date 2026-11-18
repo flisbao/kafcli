@@ -64,8 +64,8 @@ pub struct GroupLagReport {
 /// Reads the groups of `request` one at a time and computes their lag.
 ///
 /// The partitions read for a group are the ones of `--topic` when given; otherwise the topics its
-/// members are assigned or subscribed to; otherwise, for a group without members, every topic of
-/// the cluster. Of those, only partitions with a committed offset are kept, plus the partitions
+/// members are assigned or subscribed to; otherwise, for a group without members or with a member
+/// whose metadata was not decoded, every topic of the cluster. Of those, only partitions with a committed offset are kept, plus the partitions
 /// assigned to an active member, which are always kept.
 pub fn collect_group_lag(
     reader: &dyn ClusterOffsetsReader,
@@ -149,7 +149,13 @@ impl<'a> TopicPartitionSource<'a> {
     ) -> CoreResult<BTreeMap<String, Vec<i32>>> {
         let restricted_to_topic = self.topic.is_some();
         let all_partitions = self.load()?;
-        if restricted_to_topic || description.members.is_empty() {
+        // A member whose metadata was not decoded tells nothing about its topics, so its group is
+        // read like an empty one: every topic, kept where it has a commit.
+        let has_undecoded_member = description
+            .members
+            .iter()
+            .any(|member| member.subscription.is_none() && member.assignment.is_none());
+        if restricted_to_topic || description.members.is_empty() || has_undecoded_member {
             return Ok(all_partitions.clone());
         }
         let member_topics: BTreeSet<&str> = description
@@ -321,6 +327,37 @@ mod tests {
             group: Some(name.to_owned()),
             topic: None,
         }
+    }
+
+    #[test]
+    fn undecodable_members_scan_every_topic_for_commits() {
+        let mut reader = reader_with_topic("pedidos", &[100]);
+        let mut undecoded = member("m1", "pedidos", &[0]);
+        undecoded.subscription = None;
+        undecoded.assignment = None;
+        reader.groups.push(group("g", vec![undecoded]));
+        commit(&mut reader, "g", "pedidos", 0, 40);
+
+        let report = collect_group_lag(&reader, &request_group("g")).unwrap();
+
+        assert_eq!(report.groups[0].total_lag, 60);
+        assert!(report.groups[0].has_active_members);
+    }
+
+    #[test]
+    fn non_consumer_protocol_group_reports_lag_from_commits() {
+        let mut reader = reader_with_topic("pedidos", &[100]);
+        let mut connect_member = member("m1", "pedidos", &[0]);
+        connect_member.subscription = None;
+        connect_member.assignment = None;
+        let mut description = group("connect-cluster", vec![connect_member]);
+        description.protocol_type = "connect".to_owned();
+        reader.groups.push(description);
+        commit(&mut reader, "connect-cluster", "pedidos", 0, 90);
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        assert_eq!(report.groups[0].total_lag, 10);
     }
 
     #[test]

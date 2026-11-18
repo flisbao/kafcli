@@ -18,7 +18,8 @@ pub struct LagView {
 }
 
 /// One `--watch` frame. JSON is one NDJSON line; a table clears the screen first only on a terminal,
-/// and ends with an empty line otherwise so piped frames stay apart.
+/// where it also carries the warnings, and ends with an empty line otherwise so piped frames stay
+/// apart.
 pub fn render_watch_frame(
     view: &LagView,
     format: OutputFormat,
@@ -26,7 +27,14 @@ pub fn render_watch_frame(
 ) -> anyhow::Result<String> {
     match format {
         OutputFormat::Json => render_json_line(view),
-        OutputFormat::Table if is_terminal => Ok(format!("{CLEAR_SCREEN}{}", view.render_table())),
+        OutputFormat::Table if is_terminal => {
+            // Warnings written to stderr before the frame would be cleared with the screen.
+            let mut frame = format!("{CLEAR_SCREEN}{}", view.render_table());
+            for warning in &view.warnings {
+                frame.push_str(&format!("\nwarning: {}", sanitize_for_terminal(warning)));
+            }
+            Ok(frame)
+        }
         OutputFormat::Table => Ok(format!("{}\n", view.render_table())),
     }
 }
@@ -217,6 +225,21 @@ mod tests {
         let frame = render_watch_frame(&watched_view(), OutputFormat::Table, true).unwrap();
 
         assert!(frame.starts_with("\x1b[2J\x1b[H"), "{frame:?}");
+    }
+
+    #[test]
+    fn watch_on_tty_keeps_warnings_inside_the_frame() {
+        let mut view = watched_view();
+        view.warnings = vec!["the group list may be incomplete\x1b[2J".to_owned()];
+
+        let frame = render_watch_frame(&view, OutputFormat::Table, true).unwrap();
+
+        let after_clear = frame.trim_start_matches("\x1b[2J\x1b[H");
+        assert!(
+            after_clear.contains("warning: the group list may be incomplete"),
+            "{frame:?}"
+        );
+        assert!(!after_clear.contains('\x1b'), "{frame:?}");
     }
 
     #[test]
