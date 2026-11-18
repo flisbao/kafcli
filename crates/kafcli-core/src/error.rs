@@ -53,6 +53,9 @@ pub enum CoreError {
     /// `groups audit` found at least one ERROR finding; the report was already written.
     #[error("groups audit found {0} ERROR finding(s)")]
     AuditFailed(usize),
+    /// `--max-lag` passed for the groups read, but some groups could not be read at all.
+    #[error("--max-lag could not be checked for {0} group(s) that could not be read")]
+    IncompleteLimitCheck(usize),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 }

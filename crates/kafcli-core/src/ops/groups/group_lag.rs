@@ -59,6 +59,15 @@ pub struct GroupLag {
 pub struct GroupLagReport {
     pub groups: Vec<GroupLag>,
     pub warnings: Vec<String>,
+    /// Groups left out of `--all-groups` because their lag could not be read.
+    pub unreadable_groups: Vec<UnreadableGroup>,
+}
+
+/// A group whose lag could not be read, with the reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UnreadableGroup {
+    pub group: String,
+    pub error: String,
 }
 
 /// Reads the groups of `request` one at a time and computes their lag.
@@ -90,15 +99,35 @@ pub fn collect_group_lag(
 
     let mut topics = TopicPartitionSource::new(reader, request.topic.as_deref());
     let mut groups = Vec::with_capacity(descriptions.len());
+    let mut unreadable_groups = Vec::new();
     for description in &descriptions {
         let candidates = topics.select_candidate_partitions(description)?;
-        let group_lag = compute_group_lag(reader, description, &candidates)?;
+        let group_lag = match compute_group_lag(reader, description, &candidates) {
+            Ok(group_lag) => group_lag,
+            // With --group the error is the answer; across every group it costs only that group.
+            Err(error) if request.group.is_none() => {
+                warnings.push(format!(
+                    "could not read the lag of group '{}': {error}",
+                    description.name
+                ));
+                unreadable_groups.push(UnreadableGroup {
+                    group: description.name.clone(),
+                    error: error.to_string(),
+                });
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if requested_group_missing && group_lag.topics.is_empty() {
             return Err(CoreError::GroupNotFound(description.name.clone()));
         }
         groups.push(group_lag);
     }
-    Ok(GroupLagReport { groups, warnings })
+    Ok(GroupLagReport {
+        groups,
+        warnings,
+        unreadable_groups,
+    })
 }
 
 fn describe_unknown_group(name: &str) -> GroupDescription {
@@ -547,5 +576,78 @@ mod tests {
             .collect();
         assert_eq!(requested, vec!["a", "b", "c"]);
         assert_eq!(report.groups.len(), 3);
+    }
+
+    #[test]
+    fn partition_without_leader_skips_only_its_group_in_all_groups() {
+        let mut reader = reader_with_topic("pedidos", &[10]);
+        reader.topics.insert("pagamentos".to_owned(), vec![0]);
+        reader.watermarks.insert(
+            ("pagamentos".to_owned(), 0),
+            PartitionWatermarks { low: 0, high: 5 },
+        );
+        reader.groups.push(group("g1", Vec::new()));
+        reader.groups.push(group("g2", Vec::new()));
+        commit(&mut reader, "g1", "pedidos", 0, 1);
+        commit(&mut reader, "g2", "pagamentos", 0, 1);
+        reader.failing_watermarks.insert(("pedidos".to_owned(), 0));
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        let names: Vec<&str> = report
+            .groups
+            .iter()
+            .map(|group| group.group.as_str())
+            .collect();
+        assert_eq!(names, vec!["g2"]);
+        assert_eq!(report.unreadable_groups.len(), 1);
+        assert_eq!(report.unreadable_groups[0].group, "g1");
+        assert!(
+            report.unreadable_groups[0]
+                .error
+                .contains("LeaderNotAvailable"),
+            "{:?}",
+            report.unreadable_groups
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("could not read the lag of group 'g1': ")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn requested_group_error_is_still_returned() {
+        let mut reader = reader_with_topic("pedidos", &[10]);
+        reader.groups.push(group("g1", Vec::new()));
+        commit(&mut reader, "g1", "pedidos", 0, 1);
+        reader.failing_watermarks.insert(("pedidos".to_owned(), 0));
+
+        let result = collect_group_lag(&reader, &request_group("g1"));
+
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("LeaderNotAvailable")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn offset_fetch_partition_error_is_not_read_as_missing_commit() {
+        let mut reader = reader_with_topic("pedidos", &[10]);
+        reader.groups.push(group("g", Vec::new()));
+        commit(&mut reader, "g", "pedidos", 0, 1);
+        reader
+            .failing_committed_partitions
+            .insert(("g".to_owned(), "pedidos".to_owned(), 0));
+
+        let result = collect_group_lag(&reader, &request_group("g"));
+
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains("TopicAuthorizationFailed")),
+            "{result:?}"
+        );
     }
 }

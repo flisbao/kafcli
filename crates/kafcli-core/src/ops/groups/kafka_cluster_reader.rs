@@ -163,17 +163,19 @@ impl ClusterOffsetsReader for KafkaClusterReader {
             .committed_offsets(list, self.timeout)
             .map_err(|error| self.map_error(BrokerOperation::OffsetFetch, Some(group), &error))?;
         drop(consumer);
-        Ok(committed
-            .elements()
-            .iter()
-            .map(|element| {
-                let offset = match element.offset() {
-                    Offset::Offset(value) if value >= 0 => Some(value),
-                    _ => None,
-                };
-                ((element.topic().to_owned(), element.partition()), offset)
-            })
-            .collect())
+        let mut offsets = BTreeMap::new();
+        for element in committed.elements() {
+            // A partition-level error is not "no commit": reading it as None would hide an offset.
+            if let Err(error) = element.error() {
+                return Err(self.map_error(BrokerOperation::OffsetFetch, Some(group), &error));
+            }
+            let offset = match element.offset() {
+                Offset::Offset(value) if value >= 0 => Some(value),
+                _ => None,
+            };
+            offsets.insert((element.topic().to_owned(), element.partition()), offset);
+        }
+        Ok(offsets)
     }
 
     fn fetch_watermarks(&self, topic: &str, partition: i32) -> CoreResult<PartitionWatermarks> {

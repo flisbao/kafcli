@@ -135,7 +135,14 @@ fn read_lag_of_empty_group(
             Ok(report.groups.into_iter().next())
         }
         Err(CoreError::GroupNotFound(_)) => Ok(None),
-        Err(error) => Err(error.into()),
+        // One unreadable group costs only its R3 check, not the whole audit.
+        Err(error) => {
+            warnings.push(format!(
+                "could not read the lag of group '{}' for R3: {error}",
+                group.name
+            ));
+            Ok(None)
+        }
     }
 }
 
@@ -174,6 +181,48 @@ mod tests {
 
         assert!(matches!(error, CoreError::AuditFailed(2)), "{error:?}");
         assert_eq!(error.to_string(), "groups audit found 2 ERROR finding(s)");
+    }
+
+    #[test]
+    fn lag_failure_of_empty_group_becomes_warning() {
+        use kafcli_core::capability::broker_capabilities::BrokerFamily;
+        use kafcli_core::ops::groups::fake_cluster_reader::FakeClusterReader;
+        use kafcli_core::ops::groups::group_snapshot::PartitionWatermarks;
+
+        let mut reader = FakeClusterReader::new(BrokerFamily::GenericKafka);
+        reader.topics.insert("pedidos".to_owned(), vec![0, 1]);
+        for partition in [0, 1] {
+            reader.watermarks.insert(
+                ("pedidos".to_owned(), partition),
+                PartitionWatermarks { low: 0, high: 10 },
+            );
+        }
+        reader
+            .committed
+            .insert(("g".to_owned(), "pedidos".to_owned(), 0), 1);
+        reader
+            .committed
+            .insert(("h".to_owned(), "pedidos".to_owned(), 1), 4);
+        reader.failing_watermarks.insert(("pedidos".to_owned(), 0));
+        let empty = |name: &str| GroupDescription {
+            name: name.to_owned(),
+            state: "Empty".to_owned(),
+            protocol_type: "consumer".to_owned(),
+            members: Vec::new(),
+        };
+        let mut warnings = Vec::new();
+
+        let failed = read_lag_of_empty_group(&reader, &empty("g"), &mut warnings).unwrap();
+        let other = read_lag_of_empty_group(&reader, &empty("h"), &mut warnings).unwrap();
+
+        assert!(failed.is_none());
+        assert_eq!(other.map(|lag| lag.total_lag), Some(6));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.starts_with("could not read the lag of group 'g' for R3: ")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! In-memory `ClusterOffsetsReader` for tests.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::capability::broker_capabilities::BrokerFamily;
 use crate::error::{CoreError, CoreResult};
@@ -22,6 +22,10 @@ pub struct FakeClusterReader {
     /// Committed offsets keyed by `(group, topic, partition)`.
     pub committed: BTreeMap<(String, String, i32), i64>,
     pub watermarks: BTreeMap<(String, i32), PartitionWatermarks>,
+    /// `(topic, partition)` whose watermarks fail with `LeaderNotAvailable`.
+    pub failing_watermarks: BTreeSet<(String, i32)>,
+    /// `(group, topic, partition)` whose committed offset fails with `TopicAuthorizationFailed`.
+    pub failing_committed_partitions: BTreeSet<(String, String, i32)>,
     committed_offset_requests: RefCell<Vec<CommittedOffsetRequest>>,
 }
 
@@ -33,6 +37,8 @@ impl FakeClusterReader {
             topics: BTreeMap::new(),
             committed: BTreeMap::new(),
             watermarks: BTreeMap::new(),
+            failing_watermarks: BTreeSet::new(),
+            failing_committed_partitions: BTreeSet::new(),
             committed_offset_requests: RefCell::new(Vec::new()),
         }
     }
@@ -74,6 +80,13 @@ impl ClusterOffsetsReader for FakeClusterReader {
         let mut offsets = BTreeMap::new();
         for (topic, topic_partitions) in partitions {
             for partition in topic_partitions {
+                if self.failing_committed_partitions.contains(&(
+                    group.to_owned(),
+                    topic.clone(),
+                    *partition,
+                )) {
+                    return Err(CoreError::Kafka("TopicAuthorizationFailed".to_owned()));
+                }
                 let committed = self
                     .committed
                     .get(&(group.to_owned(), topic.clone(), *partition))
@@ -85,6 +98,12 @@ impl ClusterOffsetsReader for FakeClusterReader {
     }
 
     fn fetch_watermarks(&self, topic: &str, partition: i32) -> CoreResult<PartitionWatermarks> {
+        if self
+            .failing_watermarks
+            .contains(&(topic.to_owned(), partition))
+        {
+            return Err(CoreError::Kafka("LeaderNotAvailable".to_owned()));
+        }
         self.watermarks
             .get(&(topic.to_owned(), partition))
             .copied()

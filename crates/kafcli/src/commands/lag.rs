@@ -50,12 +50,14 @@ pub fn lag(
         arguments.top,
         arguments.max_lag,
     )
+    .or_else(|| check_limit_completeness(&report, arguments.max_lag))
     .map(anyhow::Error::new);
     let output_format = execution.global.output;
     write_collection_warnings(&report.warnings, output_format);
     let view = LagView {
         groups: report.groups,
         warnings: report.warnings,
+        unreadable_groups: report.unreadable_groups,
         changes: None,
     };
     Ok(RenderedOutput {
@@ -100,6 +102,7 @@ fn watch_lag(
         let view = LagView {
             groups: report.groups,
             warnings: report.warnings,
+            unreadable_groups: report.unreadable_groups,
             changes: Some(changes),
         };
         let frame = render_watch_frame(&view, output_format, is_terminal)?;
@@ -120,6 +123,7 @@ fn watch_lag(
             GroupLagReport {
                 groups: view.groups,
                 warnings: view.warnings,
+                unreadable_groups: view.unreadable_groups,
             },
             sampled_at,
         ));
@@ -181,6 +185,18 @@ pub fn check_max_lag(report: &GroupLagReport, maximum: u64) -> Option<CoreError>
         })
 }
 
+/// `IncompleteLimitCheck` when `--max-lag` is given and some groups could not be read, so their
+/// lag was never compared with the limit. Called only after `check_max_lag` found no group above it.
+pub fn check_limit_completeness(
+    report: &GroupLagReport,
+    maximum: Option<u64>,
+) -> Option<CoreError> {
+    maximum?;
+    (!report.unreadable_groups.is_empty()).then_some(CoreError::IncompleteLimitCheck(
+        report.unreadable_groups.len(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,7 +216,31 @@ mod tests {
         GroupLagReport {
             groups,
             warnings: Vec::new(),
+            unreadable_groups: Vec::new(),
         }
+    }
+
+    #[test]
+    fn unreadable_group_with_max_lag_is_incomplete_check() {
+        let mut report = report(vec![group("a", 5)]);
+        report
+            .unreadable_groups
+            .push(kafcli_core::ops::groups::group_lag::UnreadableGroup {
+                group: "b".to_owned(),
+                error: "kafka error: LeaderNotAvailable".to_owned(),
+            });
+
+        let error = check_limit_completeness(&report, Some(1000)).unwrap();
+
+        assert!(
+            matches!(error, CoreError::IncompleteLimitCheck(1)),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "--max-lag could not be checked for 1 group(s) that could not be read"
+        );
+        assert!(check_limit_completeness(&report, None).is_none());
     }
 
     #[test]

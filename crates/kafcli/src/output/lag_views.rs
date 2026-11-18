@@ -3,7 +3,7 @@ use crate::output::renderer::{TableRenderable, render_json_line};
 use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
-use kafcli_core::ops::groups::group_lag::{GroupLag, PartitionLag};
+use kafcli_core::ops::groups::group_lag::{GroupLag, PartitionLag, UnreadableGroup};
 use kafcli_core::ops::groups::lag_trend::{GroupLagChange, LagTrend};
 use serde::Serialize;
 
@@ -13,6 +13,8 @@ use serde::Serialize;
 pub struct LagView {
     pub groups: Vec<GroupLag>,
     pub warnings: Vec<String>,
+    /// Groups left out because their lag could not be read; their warnings say why.
+    pub unreadable_groups: Vec<UnreadableGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changes: Option<Vec<GroupLagChange>>,
 }
@@ -195,6 +197,7 @@ mod tests {
                 }],
             }],
             warnings: Vec::new(),
+            unreadable_groups: Vec::new(),
             changes: None,
         }
     }
