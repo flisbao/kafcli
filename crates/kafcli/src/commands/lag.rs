@@ -1,7 +1,8 @@
 use crate::cli::lag_arguments::{LagArguments, LagSortOrder};
 use crate::execution_context::ExecutionContext;
 use crate::output::collection_warnings::write_collection_warnings;
-use crate::output::lag_views::LagView;
+use crate::output::lag_views::{LagView, render_watch_frame};
+use crate::output::output_format::OutputFormat;
 use crate::output::production_warning::warn_if_production;
 use crate::output::renderer::{RenderedOutput, render_output};
 use kafcli_core::config::loader::load_configuration;
@@ -11,8 +12,10 @@ use kafcli_core::connection::client_config_builder::ConnectionSettings;
 use kafcli_core::error::CoreError;
 use kafcli_core::ops::groups::group_lag::{GroupLagReport, LagRequest, collect_group_lag};
 use kafcli_core::ops::groups::kafka_cluster_reader::KafkaClusterReader;
+use kafcli_core::ops::groups::lag_trend::compare_lag_samples;
 use kafcli_core::secret::resolver::SecretResolver;
-use std::time::Duration;
+use std::io::{self, ErrorKind, IsTerminal, Write};
+use std::time::{Duration, Instant};
 
 /// Shows the consumer lag of one group or of every group.
 ///
@@ -28,6 +31,15 @@ pub fn lag(
         group: arguments.group.clone(),
         topic: arguments.topic.clone(),
     };
+    if let Some(interval) = arguments.watch {
+        return watch_lag(
+            &reader,
+            &request,
+            arguments,
+            interval,
+            execution.global.output,
+        );
+    }
     let mut report = collect_group_lag(&reader, &request)?;
     order_groups(&mut report, arguments.sort, arguments.top);
     let trailing_error = arguments
@@ -39,11 +51,85 @@ pub fn lag(
     let view = LagView {
         groups: report.groups,
         warnings: report.warnings,
+        changes: None,
     };
     Ok(RenderedOutput {
         text: Some(render_output(&view, output_format)?),
         trailing_error,
     })
+}
+
+/// Samples the lag every `interval` until stopped, keeping only the previous sample.
+///
+/// Each frame goes to stdout as soon as it is rendered. The first sample above `--max-lag` ends the
+/// run with `LimitExceeded` after its frame; a closed stdout pipe ends it as a success.
+fn watch_lag(
+    reader: &KafkaClusterReader,
+    request: &LagRequest,
+    arguments: &LagArguments,
+    interval: Duration,
+    output_format: OutputFormat,
+) -> anyhow::Result<RenderedOutput> {
+    let is_terminal = io::stdout().is_terminal();
+    let mut previous: Option<(GroupLagReport, Instant)> = None;
+    loop {
+        let sampled_at = Instant::now();
+        let mut report = collect_group_lag(reader, request)?;
+        order_groups(&mut report, arguments.sort, arguments.top);
+        let changes = previous
+            .as_ref()
+            .map(|(before, before_at)| {
+                compare_lag_samples(before, &report, sampled_at.duration_since(*before_at))
+            })
+            .unwrap_or_default();
+        let limit_error = arguments
+            .max_lag
+            .and_then(|maximum| check_max_lag(&report, maximum));
+        write_collection_warnings(&report.warnings, output_format);
+        let view = LagView {
+            groups: report.groups,
+            warnings: report.warnings,
+            changes: Some(changes),
+        };
+        let frame = render_watch_frame(&view, output_format, is_terminal)?;
+        match write_frame(&frame) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => {
+                return Ok(RenderedOutput::streamed());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if let Some(error) = limit_error {
+            return Ok(RenderedOutput {
+                text: None,
+                trailing_error: Some(anyhow::Error::new(error)),
+            });
+        }
+        previous = Some((
+            GroupLagReport {
+                groups: view.groups,
+                warnings: view.warnings,
+            },
+            sampled_at,
+        ));
+        wait_for_next_sample(interval);
+    }
+}
+
+/// The pause between `--watch` samples is what the user asked for, not a wait on a client, so no
+/// client timeout can replace it (ADR 0006).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the --watch interval is a user-chosen pause between samples, see ADR 0006"
+)]
+fn wait_for_next_sample(interval: Duration) {
+    std::thread::sleep(interval);
+}
+
+fn write_frame(frame: &str) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{frame}")?;
+    stdout.flush()
 }
 
 /// Selects the context, warns when it is protected and opens a read-only cluster reader.

@@ -103,13 +103,17 @@ Notes:
   kafcli lag --group pedidos-service --topic pedidos --max-lag 1000
   kafcli lag --all-groups --sort lag --top 20
   kafcli lag --group pedidos-service --output json
+  kafcli lag --group pedidos-service --watch 5s
 
 Notes:
   Reads only: nothing is committed and no group is joined.
   Without --topic, a group with members shows the topics it is assigned or subscribed to; a group
   without members shows every topic where it has a committed offset.
   A partition without a committed offset shows `-` (null in JSON) and is not counted in the totals.
-  --max-lag compares the total lag of each group and exits with code 2 after printing the report.
+  --max-lag compares the total lag of each group and exits with code 2 after printing the report;
+  with --watch it stops at the first sample above the limit.
+  --watch shows the consumption rate and the lag trend since the previous sample; on a terminal it
+  redraws the screen, otherwise it prints one frame after another (one NDJSON line in JSON).
   Groups of the new consumer protocol (KIP-848) are listed without decoded members."#)]
     Lag(LagArguments),
 }

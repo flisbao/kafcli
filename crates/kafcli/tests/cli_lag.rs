@@ -65,3 +65,16 @@ fn lag_help_has_examples() {
             )),
         );
 }
+
+#[test]
+fn lag_rejects_zero_watch_interval() {
+    let directory = tempfile::tempdir().unwrap();
+
+    build_kafcli_command(directory.path())
+        .args(["lag", "--all-groups", "--watch", "0s"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "watch interval must be 1s to 3600s, like 5s or 1m",
+        ));
+}

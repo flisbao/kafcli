@@ -55,3 +55,11 @@ pub fn render_output<T: Serialize + TableRenderable>(
         })?),
     }
 }
+
+/// Renders `value` in the JSON envelope on a single line, for NDJSON streams.
+pub fn render_json_line<T: Serialize>(value: &T) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&JsonEnvelope {
+        kafcli_output: OUTPUT_SCHEMA_VERSION,
+        data: value,
+    })?)
+}

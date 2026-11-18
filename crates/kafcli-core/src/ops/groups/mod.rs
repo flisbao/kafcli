@@ -7,3 +7,4 @@ pub mod fake_cluster_reader;
 pub mod group_lag;
 pub mod group_snapshot;
 pub mod kafka_cluster_reader;
+pub mod lag_trend;

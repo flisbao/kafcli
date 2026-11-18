@@ -1,16 +1,38 @@
-use crate::output::renderer::TableRenderable;
+use crate::output::output_format::OutputFormat;
+use crate::output::renderer::{TableRenderable, render_json_line};
 use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
 use kafcli_core::ops::groups::group_lag::{GroupLag, PartitionLag};
+use kafcli_core::ops::groups::lag_trend::{GroupLagChange, LagTrend};
 use serde::Serialize;
 
 /// The `kafcli lag` result: groups in display order and the warnings of the collection.
+/// `changes` is set only under `--watch`, empty on the first sample.
 #[derive(Debug, Serialize)]
 pub struct LagView {
     pub groups: Vec<GroupLag>,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<Vec<GroupLagChange>>,
 }
+
+/// One `--watch` frame. JSON is one NDJSON line; a table clears the screen first only on a terminal,
+/// and ends with an empty line otherwise so piped frames stay apart.
+pub fn render_watch_frame(
+    view: &LagView,
+    format: OutputFormat,
+    is_terminal: bool,
+) -> anyhow::Result<String> {
+    match format {
+        OutputFormat::Json => render_json_line(view),
+        OutputFormat::Table if is_terminal => Ok(format!("{CLEAR_SCREEN}{}", view.render_table())),
+        OutputFormat::Table => Ok(format!("{}\n", view.render_table())),
+    }
+}
+
+/// Clears the terminal and moves the cursor home.
+const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
 
 const NULL_CELL: &str = "-";
 
@@ -43,7 +65,44 @@ impl TableRenderable for LagView {
             }
             sections.push(section);
         }
-        sections.join("\n\n")
+        let mut rendered = sections.join("\n\n");
+        if let Some(changes) = self.changes.as_ref().filter(|changes| !changes.is_empty()) {
+            rendered.push_str("\n\n");
+            rendered.push_str(&render_changes_table(changes));
+        }
+        rendered
+    }
+}
+
+fn render_changes_table(changes: &[GroupLagChange]) -> String {
+    let mut table = Table::new();
+    *table.style_mut() = UTF8_FULL_CONDENSED;
+    table.set_header(vec![
+        Cell::new("GROUP"),
+        Cell::new("CONSUMED/S"),
+        Cell::new("LAG-DELTA"),
+        Cell::new("TREND"),
+    ]);
+    for change in changes {
+        table.add_row(vec![
+            Cell::new(sanitize_for_terminal(&change.group)),
+            Cell::new(
+                change
+                    .consumed_per_second
+                    .map_or(NULL_CELL.to_owned(), |rate| format!("{rate:.1}")),
+            ),
+            Cell::new(format!("{:+}", change.lag_delta)),
+            Cell::new(describe_trend(change.trend)),
+        ]);
+    }
+    table.to_string()
+}
+
+fn describe_trend(trend: LagTrend) -> &'static str {
+    match trend {
+        LagTrend::Rising => "rising",
+        LagTrend::Falling => "falling",
+        LagTrend::Steady => "steady",
     }
 }
 
@@ -128,7 +187,56 @@ mod tests {
                 }],
             }],
             warnings: Vec::new(),
+            changes: None,
         }
+    }
+
+    fn watched_view() -> LagView {
+        let mut view = view_with(true, vec![partition(0, Some(90), None)]);
+        view.changes = Some(vec![GroupLagChange {
+            group: "pedidos-service".to_owned(),
+            consumed_per_second: Some(12.5),
+            lag_delta: -3,
+            trend: kafcli_core::ops::groups::lag_trend::LagTrend::Falling,
+        }]);
+        view
+    }
+
+    #[test]
+    fn watch_without_tty_has_no_ansi_clear() {
+        let frame = render_watch_frame(&watched_view(), OutputFormat::Table, false).unwrap();
+
+        assert!(!frame.contains("\x1b["), "{frame:?}");
+        assert!(frame.contains("TOTAL pedidos-service 10"), "{frame}");
+        assert!(frame.contains("falling"), "{frame}");
+        assert!(frame.ends_with('\n'), "{frame:?}");
+    }
+
+    #[test]
+    fn watch_on_tty_clears_screen_first() {
+        let frame = render_watch_frame(&watched_view(), OutputFormat::Table, true).unwrap();
+
+        assert!(frame.starts_with("\x1b[2J\x1b[H"), "{frame:?}");
+    }
+
+    #[test]
+    fn watch_json_frame_is_one_line() {
+        let frame = render_watch_frame(&watched_view(), OutputFormat::Json, true).unwrap();
+
+        assert!(!frame.contains('\n'), "{frame}");
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value["kafcli_output"], 1);
+        assert_eq!(value["data"]["changes"][0]["trend"], "falling");
+        assert_eq!(value["data"]["changes"][0]["consumed_per_second"], 12.5);
+    }
+
+    #[test]
+    fn view_without_watch_has_no_changes_field() {
+        let view = view_with(true, vec![partition(0, Some(90), None)]);
+
+        let json = serde_json::to_value(&view).unwrap();
+
+        assert!(json.get("changes").is_none(), "{json}");
     }
 
     #[test]

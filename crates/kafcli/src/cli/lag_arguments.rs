@@ -1,3 +1,6 @@
+use crate::cli::watch_interval::parse_watch_interval;
+use std::time::Duration;
+
 /// How `kafcli lag` orders the groups.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LagSortOrder {
@@ -32,6 +35,9 @@ pub struct LagArguments {
     /// Exits with code 2 when the total lag of a group is above N; the report is still printed.
     #[arg(long, value_name = "N")]
     pub max_lag: Option<u64>,
+    /// Samples again every INTERVAL (5s, 1m or seconds, 1s to 3600s) and shows the change.
+    #[arg(long, value_name = "INTERVAL", value_parser = parse_watch_interval)]
+    pub watch: Option<Duration>,
     /// Timeout of each broker request, in seconds.
     #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub timeout_seconds: u64,

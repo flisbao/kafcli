@@ -5,3 +5,4 @@ pub mod lag_arguments;
 pub mod produce_arguments;
 pub mod schema_arguments;
 pub mod schema_source_arguments;
+pub mod watch_interval;
