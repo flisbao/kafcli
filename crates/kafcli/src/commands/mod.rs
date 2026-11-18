@@ -5,6 +5,7 @@ pub mod destructive_support;
 pub mod groups;
 pub mod lag;
 pub mod offsets;
+pub mod poison;
 pub mod produce;
 pub mod registry_connection;
 pub mod schema;

@@ -7,6 +7,7 @@ pub mod lag_views;
 pub mod offset_reset_views;
 pub mod offsets_views;
 pub mod output_format;
+pub mod poison_views;
 pub mod produce_dry_run_view;
 pub mod produce_report_view;
 pub mod production_warning;

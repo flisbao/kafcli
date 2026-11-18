@@ -12,6 +12,7 @@ use cli::arguments::{CommandLineArguments, TopLevelCommand};
 use cli::context_arguments::ContextCommand;
 use cli::groups_arguments::GroupsCommand;
 use cli::offsets_arguments::OffsetsCommand;
+use cli::poison_arguments::PoisonCommand;
 use cli::schema_arguments::SchemaCommand;
 use commands::consume::consume;
 use commands::context::{
@@ -22,6 +23,7 @@ use commands::lag::lag;
 use commands::offsets::restore_offsets::restore_offsets;
 use commands::offsets::set_offsets::set_offsets;
 use commands::offsets::show_offsets::show_offsets;
+use commands::poison::find_poison::find_poison;
 use commands::produce::produce;
 use commands::schema::check_compatibility::check_compatibility;
 use commands::schema::get_schema::get_schema;
@@ -188,6 +190,11 @@ fn run(
             }
             OffsetsCommand::Restore(restore_arguments) => {
                 restore_offsets(&execution, resolver, &TerminalPrompter, &restore_arguments)
+            }
+        },
+        TopLevelCommand::Poison { command } => match command {
+            PoisonCommand::Find(find_arguments) => {
+                find_poison(&execution, resolver, &find_arguments)
             }
         },
         TopLevelCommand::Schema { command } => match command {

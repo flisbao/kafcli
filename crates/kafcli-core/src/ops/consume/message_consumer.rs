@@ -399,7 +399,7 @@ impl<'a> ConsumeRun<'a> {
 
 /// Chooses what the envelope keeps of a value. With redaction on, a truncated or undecodable value
 /// is withheld, because redaction cannot reach its content.
-fn build_envelope_value(
+pub(crate) fn build_envelope_value(
     payload: Option<&[u8]>,
     headers: &[RecordHeader],
     decoder: &dyn ValueDecoder,

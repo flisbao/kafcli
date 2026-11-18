@@ -438,3 +438,86 @@ fn offsets_restore_returns_to_previous_state() {
         vec!["executed", "dry-run", "executed"]
     );
 }
+
+/// Writes `lines` to `topic` as values, one message per line.
+fn produce_lines(topic: &str, lines: &[&str]) {
+    let mut child = kafka_tool("kafka-console-producer.sh")
+        .args(["--topic", topic])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        for line in lines {
+            writeln!(stdin, "{line}").unwrap();
+        }
+    }
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
+}
+
+/// A one-partition topic with five JSON values and a value that is not JSON at offset 5, and a
+/// stopped group committed at 5.
+fn prepare_stuck_group() -> (TopicGuard, String) {
+    let topic = TopicGuard::create(&unique_name("poison"), 1);
+    produce_lines(
+        &topic.name,
+        &[
+            r#"{"id":0}"#,
+            r#"{"id":1}"#,
+            r#"{"id":2}"#,
+            r#"{"id":3}"#,
+            r#"{"id":4}"#,
+            "not-json",
+            r#"{"id":6}"#,
+        ],
+    );
+    let group = unique_name("poison-group");
+    run_kafka_tool(
+        "kafka-console-consumer.sh",
+        &[
+            "--topic",
+            &topic.name,
+            "--group",
+            &group,
+            "--from-beginning",
+            "--max-messages",
+            "5",
+            "--timeout-ms",
+            "30000",
+            "--consumer-property",
+            "max.poll.records=1",
+        ],
+    );
+    (topic, group)
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn poison_find_reports_undecodable_message() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let (topic, group) = prepare_stuck_group();
+
+    let output = build_kafcli_command(directory.path())
+        .args([
+            "poison", "find", "--output", "json", "--group", &group, "--topic",
+        ])
+        .arg(&topic.name)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let candidate = &report["data"]["candidates"][0];
+    assert_eq!(candidate["partition"], 0);
+    assert_eq!(candidate["status"], "undecodable");
+    assert_eq!(candidate["message_offset"], 5);
+    assert_eq!(candidate["committed_offset"], 5);
+    assert!(!state_directory(directory.path()).join("audit.log").exists());
+}

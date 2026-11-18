@@ -3,4 +3,5 @@
 pub mod consume;
 pub mod groups;
 pub mod offsets;
+pub mod poison;
 pub mod produce;
