@@ -89,6 +89,8 @@ impl AzureCliTokenSource {
         if let Some(tenant_id) = &self.tenant_id {
             command.args(["--tenant"]).arg(tenant_id);
         }
+        #[cfg(windows)]
+        command.current_dir(windows_system_directory());
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -96,7 +98,18 @@ impl AzureCliTokenSource {
         command
     }
 
+    /// Refuses values that `az`, or `cmd` on Windows, could read as more than one argument or as
+    /// a command. Runs before any spawn, on every platform.
+    fn validate_arguments(&self) -> Result<(), LinkFailure> {
+        check_argument("scope", &self.scope, is_scope_character)?;
+        if let Some(tenant_id) = &self.tenant_id {
+            check_argument("tenant_id", tenant_id, is_tenant_character)?;
+        }
+        Ok(())
+    }
+
     fn run_az(&self) -> Result<AccessToken, LinkFailure> {
+        self.validate_arguments()?;
         let mut child = self.build_command().spawn().map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 LinkFailure::Unavailable(NOT_FOUND_MESSAGE.to_owned())
@@ -109,6 +122,12 @@ impl AzureCliTokenSource {
         let stderr = read_in_background(child.stderr.take(), STDERR_LIMIT_BYTES);
         // Both pipes reach end of file when `az` exits, so the deadline is enforced on the pipes:
         // the parent still owns the child and can kill it, without sleeping in a poll loop.
+        // Limits of this wait:
+        // - a child that closes both pipes and keeps running makes the final `child.wait()`
+        //   unbounded;
+        // - a grandchild that inherits the pipes keeps them open, so a successful run then reports
+        //   a timeout;
+        // - kill reaches only the direct child, never its grandchildren.
         let stdout = receive_output_before(&stdout, deadline, &mut child)?;
         let stderr = receive_output_before(&stderr, deadline, &mut child)?;
         let status = child
@@ -138,6 +157,44 @@ fn default_program() -> (PathBuf, Vec<OsString>) {
 
 fn failure(message: &str) -> LinkFailure {
     LinkFailure::Error(CoreError::Authentication(message.to_owned()))
+}
+
+/// Scope of an Entra ID resource: letters, digits and `_ - . : /`, and never a leading `-`.
+fn is_scope_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ':' | '/')
+}
+
+/// Tenant id or domain: letters, digits, `.` and `-`.
+fn is_tenant_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '.' | '-')
+}
+
+fn check_argument(
+    name: &str,
+    value: &str,
+    is_allowed: fn(char) -> bool,
+) -> Result<(), LinkFailure> {
+    if value.starts_with('-') {
+        return Err(failure(&format!(
+            "azure-cli: {name} must not start with '-'"
+        )));
+    }
+    if value.is_empty() || !value.chars().all(is_allowed) {
+        return Err(failure(&format!(
+            "azure-cli: {name} contains characters that are not allowed"
+        )));
+    }
+    Ok(())
+}
+
+/// `cmd` resolves `az` from its working directory first, so Windows runs it from the system
+/// directory instead of the caller's.
+#[cfg(windows)]
+fn windows_system_directory() -> PathBuf {
+    std::env::var_os("SYSTEMROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
 }
 
 /// Drains a pipe on its own thread, so a large output cannot block the parent. At most
@@ -391,5 +448,68 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(matches!(error, CoreError::Authentication(_)));
+    }
+
+    #[test]
+    fn scope_with_shell_metacharacter_is_refused_before_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("spawned");
+        let program = write_fake_az(directory.path(), &format!("touch '{}'", marker.display()));
+        let source = AzureCliTokenSource::with_script(
+            program,
+            None,
+            "https://ns.servicebus.windows.net/.default&calc".to_string(),
+            Duration::from_secs(30),
+        );
+
+        let error = source.fetch_access_token().unwrap_err();
+
+        assert_eq!(
+            format!("{error}"),
+            "authentication error: azure-cli: scope contains characters that are not allowed"
+        );
+        assert!(!marker.exists(), "az must not be spawned");
+    }
+
+    #[test]
+    fn scope_starting_with_dash_is_refused_before_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("spawned");
+        let program = write_fake_az(directory.path(), &format!("touch '{}'", marker.display()));
+        let source = AzureCliTokenSource::with_script(
+            program,
+            None,
+            "--output=none".to_string(),
+            Duration::from_secs(30),
+        );
+
+        let error = source.fetch_access_token().unwrap_err();
+
+        assert_eq!(
+            format!("{error}"),
+            "authentication error: azure-cli: scope must not start with '-'"
+        );
+        assert!(!marker.exists(), "az must not be spawned");
+    }
+
+    #[test]
+    fn tenant_with_metacharacter_is_refused_before_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("spawned");
+        let program = write_fake_az(directory.path(), &format!("touch '{}'", marker.display()));
+        let source = AzureCliTokenSource::with_script(
+            program,
+            Some("tenant&calc".to_string()),
+            "s".to_string(),
+            Duration::from_secs(30),
+        );
+
+        let error = source.fetch_access_token().unwrap_err();
+
+        assert_eq!(
+            format!("{error}"),
+            "authentication error: azure-cli: tenant_id contains characters that are not allowed"
+        );
+        assert!(!marker.exists(), "az must not be spawned");
     }
 }

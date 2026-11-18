@@ -8,6 +8,7 @@ use crate::error::CoreResult;
 use crate::registry::path_segment::encode_path_segment;
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Base address of the Instance Metadata Service, reachable only from inside an Azure VM or pod.
@@ -38,6 +39,9 @@ pub struct ManagedIdentityTokenSource {
     environment: Arc<dyn AzureEnvironment>,
     imds_base_url: String,
     probe_timeout: Option<Duration>,
+    /// Set after the first token. The probe timeout only guards the first call, so a slow refresh
+    /// of a link that already works is not cut short.
+    has_token: AtomicBool,
 }
 
 impl ManagedIdentityTokenSource {
@@ -56,6 +60,15 @@ impl ManagedIdentityTokenSource {
             environment,
             imds_base_url,
             probe_timeout,
+            has_token: AtomicBool::new(false),
+        }
+    }
+
+    /// The probe timeout until the first token, then the full token request timeout.
+    fn request_timeout(&self) -> Duration {
+        match self.probe_timeout {
+            Some(probe) if !self.has_token.load(Ordering::SeqCst) => probe,
+            _ => TOKEN_REQUEST_TIMEOUT,
         }
     }
 
@@ -83,8 +96,13 @@ impl ManagedIdentityTokenSource {
     /// IMDS that cannot be reached, or answers 400 or 404 (no identity on this host), is
     /// unavailable. Any other answer is an error. The App Service endpoint has no such case.
     fn fetch_token_or_classify(&self) -> Result<AccessToken, LinkFailure> {
-        let http = TokenHttpClient::new(self.probe_timeout.unwrap_or(TOKEN_REQUEST_TIMEOUT))
-            .map_err(LinkFailure::Error)?;
+        let token = self.request_token()?;
+        self.has_token.store(true, Ordering::SeqCst);
+        Ok(token)
+    }
+
+    fn request_token(&self) -> Result<AccessToken, LinkFailure> {
+        let http = TokenHttpClient::new(self.request_timeout()).map_err(LinkFailure::Error)?;
         let now = SystemTime::now();
         match self.app_service_endpoint() {
             Some((endpoint, header)) => {
@@ -146,6 +164,8 @@ mod tests {
     use crate::auth::azure::azure_environment::FakeAzureEnvironment;
     use crate::registry::fake_registry_server::{FakeRegistryServer, FakeRoute};
     use secrecy::ExposeSecret;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     const RESOURCE: &str = "https://ns.servicebus.windows.net";
@@ -270,5 +290,54 @@ mod tests {
         assert!(token.expires_at >= expected_from_expires_in - slack);
         assert!(token.expires_at <= expected_from_expires_in + slack);
         assert_ne!(token.expires_at, from_expires_on);
+    }
+
+    /// Answers each connection with a token. The connections after the first wait `later_delay`,
+    /// which is longer than the probe timeout used in the test. The sleep is test-only (ADR 0004).
+    #[allow(clippy::disallowed_methods)]
+    fn serve_tokens(listener: TcpListener, later_delay: Duration) {
+        for (index, stream) in listener.incoming().flatten().enumerate() {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if line == "\r\n" || line == "\n" => break,
+                    Ok(_) => {}
+                }
+            }
+            if index > 0 {
+                std::thread::sleep(later_delay);
+            }
+            let body = r#"{"access_token":"t","expires_in":3600}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = reader.get_mut().write_all(response.as_bytes());
+        }
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn probe_timeout_applies_only_until_the_first_token() {
+        // The probe timeout is 1 s. The second answer comes after 1.5 s, so the second fetch only
+        // succeeds when the full request timeout is used.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || serve_tokens(listener, Duration::from_millis(1500)));
+        let source = ManagedIdentityTokenSource::with_endpoints(
+            None,
+            RESOURCE.to_string(),
+            Arc::new(FakeAzureEnvironment::new(&[])),
+            format!("http://{address}"),
+            Some(Duration::from_secs(1)),
+        );
+
+        source.fetch_access_token().unwrap();
+        let second = source.fetch_access_token();
+
+        assert!(second.is_ok(), "second fetch failed: {second:?}");
     }
 }
