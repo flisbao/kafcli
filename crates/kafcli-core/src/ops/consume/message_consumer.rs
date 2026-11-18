@@ -474,10 +474,11 @@ fn create_consume_consumer(
     connection: &KafkaConnection,
     config: ClientConfig,
 ) -> CoreResult<ConsumeConsumer> {
+    let refresher = connection.refresher().for_new_client();
     let consumer: ConsumeConsumer = config
-        .create_with_context(ConsumeClientContext::new(connection.refresher().clone()))
+        .create_with_context(ConsumeClientContext::new(refresher.clone()))
         .map_err(map_kafka_error)?;
-    connection.wait_for_initial_token(|timeout| {
+    connection.wait_for_initial_token(&refresher, |timeout| {
         consumer.poll(timeout);
     })?;
     Ok(consumer)

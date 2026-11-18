@@ -12,8 +12,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const FALLBACK_PRINCIPAL: &str = "kafcli";
 const MISSING_SOURCE_MESSAGE: &str = "no OAUTHBEARER token source configured";
 
-/// Hands tokens from a token source to librdkafka and records what happened, so that the
-/// connection can wait for the first token and report a failed token request.
+/// Hands tokens from a token source to librdkafka and records what happened, so that a client
+/// can wait for its first token and report its failed token request.
+///
+/// `served` and `last_error` belong to one client: each client gets its own through
+/// `for_new_client`. `last_principal` is shared by every refresher derived from one connection,
+/// so the connection's refresher reports the last token served by any of its clients. `Clone`
+/// hands out another handle to the same client state, not a new client.
 #[derive(Clone)]
 pub struct OAuthTokenRefresher {
     source: Option<Arc<dyn TokenSource>>,
@@ -34,6 +39,17 @@ impl OAuthTokenRefresher {
 
     pub fn has_token_source(&self) -> bool {
         self.source.is_some()
+    }
+
+    /// Refresher for one new client: same token source and shared principal, but its own
+    /// served flag and last error.
+    pub fn for_new_client(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            served: Arc::new(AtomicBool::new(false)),
+            last_error: Arc::new(Mutex::new(None)),
+            last_principal: Arc::clone(&self.last_principal),
+        }
     }
 
     /// Fetches a token from the source for librdkafka. The source's error text is kept as the
@@ -177,6 +193,36 @@ mod tests {
 
         assert_eq!(token.principal_name, "kafcli");
         assert_eq!(refresher.last_principal(), None);
+    }
+
+    #[test]
+    fn shared_principal_is_visible_from_connection_refresher() {
+        let jwt = jwt_with_claims(r#"{"sub":"svc","exp":2000000000}"#);
+        let connection_refresher = refresher_serving(&jwt);
+        let client = connection_refresher.for_new_client();
+
+        client.generate_kafka_token().unwrap();
+
+        assert_eq!(
+            connection_refresher.last_principal().as_deref(),
+            Some("svc")
+        );
+        assert!(!connection_refresher.has_served_token());
+        assert!(client.has_served_token());
+    }
+
+    #[test]
+    fn client_error_stays_with_that_client() {
+        let failing = OAuthTokenRefresher::new(Some(Arc::new(FixedTokenSource {
+            outcome: Err("token request failed".to_owned()),
+        })));
+        let client = failing.for_new_client();
+        let other = client.for_new_client();
+
+        let _ = client.generate_kafka_token();
+
+        assert_eq!(client.last_error().as_deref(), Some("token request failed"));
+        assert_eq!(other.last_error(), None);
     }
 
     #[test]

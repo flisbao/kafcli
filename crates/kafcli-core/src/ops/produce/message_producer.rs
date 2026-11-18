@@ -183,6 +183,7 @@ pub fn produce_messages(
     ensure_topic_exists(&connection, &options.topic, options.timeout)?;
 
     let (sender, receiver) = mpsc::channel();
+    let refresher = connection.refresher().for_new_client();
     let producer: BaseProducer<ProduceDeliveryContext> = build_producer_config(
         connection.client_config(),
         tuning.compression_disabled,
@@ -190,10 +191,10 @@ pub fn produce_messages(
     )
     .create_with_context(ProduceDeliveryContext {
         deliveries: sender,
-        refresher: connection.refresher().clone(),
+        refresher: refresher.clone(),
     })
     .map_err(map_kafka_error)?;
-    connection.wait_for_initial_token(|timeout| {
+    connection.wait_for_initial_token(&refresher, |timeout| {
         producer.poll(timeout);
     })?;
 

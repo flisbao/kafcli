@@ -245,18 +245,22 @@ impl ProbeSession<'_> {
 
     fn produce_probe_messages(&self) -> (CapabilityOutcome, Option<ProducedBatch>) {
         let (sender, receiver) = mpsc::channel();
+        let refresher = self.connection.refresher().for_new_client();
         let producer: BaseProducer<ProbeProducerContext> = match self
             .build_producer_config()
             .create_with_context(ProbeProducerContext {
                 deliveries: sender,
-                refresher: self.connection.refresher().clone(),
+                refresher: refresher.clone(),
             }) {
             Ok(producer) => producer,
             Err(error) => return (classify_kafka_error(&error), None),
         };
-        if let Err(error) = self.connection.wait_for_initial_token(|timeout| {
-            producer.poll(timeout);
-        }) {
+        if let Err(error) = self
+            .connection
+            .wait_for_initial_token(&refresher, |timeout| {
+                producer.poll(timeout);
+            })
+        {
             return (classify_kafka_error(&to_client_creation_error(error)), None);
         }
 
@@ -582,10 +586,11 @@ fn create_probe_consumer(
     connection: &KafkaConnection,
     config: ClientConfig,
 ) -> KafkaResult<BaseConsumer<KafkaClientContext>> {
+    let refresher = connection.refresher().for_new_client();
     let consumer: BaseConsumer<KafkaClientContext> =
-        config.create_with_context(KafkaClientContext::new(connection.refresher().clone()))?;
+        config.create_with_context(KafkaClientContext::new(refresher.clone()))?;
     connection
-        .wait_for_initial_token(|timeout| {
+        .wait_for_initial_token(&refresher, |timeout| {
             consumer.poll(timeout);
         })
         .map_err(to_client_creation_error)?;

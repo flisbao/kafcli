@@ -35,29 +35,35 @@ impl KafkaConnection {
         &self,
         config: ClientConfig,
     ) -> CoreResult<BaseConsumer<KafkaClientContext>> {
+        let refresher = self.refresher.for_new_client();
         let consumer: BaseConsumer<KafkaClientContext> = config
-            .create_with_context(KafkaClientContext::new(self.refresher.clone()))
+            .create_with_context(KafkaClientContext::new(refresher.clone()))
             .map_err(map_kafka_error)?;
-        self.wait_for_initial_token(|timeout| {
+        self.wait_for_initial_token(&refresher, |timeout| {
             consumer.poll(timeout);
         })?;
         Ok(consumer)
     }
 
-    /// Waits until the first token is served. librdkafka requests tokens only while its client
-    /// is polled, so `poll_once` must poll the client that owns the refresher.
+    /// Waits until `client` has served its first token. librdkafka requests tokens only while the
+    /// client is polled, so `poll_once` must poll the client that owns `client`. `client` must be
+    /// the refresher handed to that client, created with `OAuthTokenRefresher::for_new_client`.
     ///
     /// Returns at once when there is no token source.
-    pub fn wait_for_initial_token(&self, mut poll_once: impl FnMut(Duration)) -> CoreResult<()> {
-        if !self.refresher.has_token_source() {
+    pub fn wait_for_initial_token(
+        &self,
+        client: &OAuthTokenRefresher,
+        mut poll_once: impl FnMut(Duration),
+    ) -> CoreResult<()> {
+        if !client.has_token_source() {
             return Ok(());
         }
         let deadline = Instant::now() + INITIAL_TOKEN_TIMEOUT;
         loop {
-            if self.refresher.has_served_token() {
+            if client.has_served_token() {
                 return Ok(());
             }
-            if let Some(message) = self.refresher.last_error() {
+            if let Some(message) = client.last_error() {
                 return Err(CoreError::Authentication(message));
             }
             if Instant::now() >= deadline {
@@ -96,9 +102,12 @@ mod tests {
     use super::*;
     use crate::auth::token::access_token::AccessToken;
     use crate::auth::token::token_source::TokenSource;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use secrecy::SecretString;
     use std::cell::Cell;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::UNIX_EPOCH;
 
     struct FailingTokenSource;
@@ -115,19 +124,51 @@ mod tests {
         }
     }
 
-    struct FixedTokenSource;
+    /// Fails on its first call and serves a token on every later call.
+    struct FailOnceTokenSource {
+        calls: AtomicUsize,
+    }
+
+    impl TokenSource for FailOnceTokenSource {
+        fn fetch_access_token(&self) -> CoreResult<AccessToken> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(CoreError::Authentication("first token failed".to_owned()));
+            }
+            Ok(serving_token("opaque-token"))
+        }
+
+        fn describe_source(&self) -> &'static str {
+            "fail-once"
+        }
+    }
+
+    struct FixedTokenSource {
+        token: String,
+    }
 
     impl TokenSource for FixedTokenSource {
         fn fetch_access_token(&self) -> CoreResult<AccessToken> {
-            Ok(AccessToken::new(
-                SecretString::from("opaque-token"),
-                UNIX_EPOCH + Duration::from_secs(2_000_000_000),
-            ))
+            Ok(serving_token(&self.token))
         }
 
         fn describe_source(&self) -> &'static str {
             "fixed"
         }
+    }
+
+    fn serving_token(value: &str) -> AccessToken {
+        AccessToken::new(
+            SecretString::from(value),
+            UNIX_EPOCH + Duration::from_secs(2_000_000_000),
+        )
+    }
+
+    fn jwt_with_subject(subject: &str) -> String {
+        format!(
+            "{}.{}.signature",
+            URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#),
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"{subject}"}}"#))
+        )
     }
 
     fn connection_with(source: Option<Arc<dyn TokenSource>>) -> KafkaConnection {
@@ -140,9 +181,10 @@ mod tests {
     #[test]
     fn wait_returns_immediately_without_token_source() {
         let connection = connection_with(None);
+        let client = connection.refresher().for_new_client();
         let polls = Cell::new(0);
 
-        let result = connection.wait_for_initial_token(|_| polls.set(polls.get() + 1));
+        let result = connection.wait_for_initial_token(&client, |_| polls.set(polls.get() + 1));
 
         assert!(result.is_ok());
         assert_eq!(polls.get(), 0);
@@ -151,10 +193,10 @@ mod tests {
     #[test]
     fn wait_returns_source_error() {
         let connection = connection_with(Some(Arc::new(FailingTokenSource)));
-        let refresher = connection.refresher().clone();
+        let client = connection.refresher().for_new_client();
 
-        let result = connection.wait_for_initial_token(|_| {
-            let _ = refresher.generate_kafka_token();
+        let result = connection.wait_for_initial_token(&client, |_| {
+            let _ = client.generate_kafka_token();
         });
 
         match result {
@@ -170,18 +212,75 @@ mod tests {
 
     #[test]
     fn wait_succeeds_after_token_is_served() {
-        let connection = connection_with(Some(Arc::new(FixedTokenSource)));
-        let refresher = connection.refresher().clone();
+        let connection = connection_with(Some(Arc::new(FixedTokenSource {
+            token: "opaque-token".to_owned(),
+        })));
+        let client = connection.refresher().for_new_client();
         let polls = Cell::new(0);
 
-        let result = connection.wait_for_initial_token(|_| {
+        let result = connection.wait_for_initial_token(&client, |_| {
             polls.set(polls.get() + 1);
             if polls.get() == 2 {
-                let _ = refresher.generate_kafka_token();
+                let _ = client.generate_kafka_token();
             }
         });
 
         assert!(result.is_ok());
         assert_eq!(polls.get(), 2);
+    }
+
+    #[test]
+    fn second_client_on_same_connection_still_waits_for_its_own_token() {
+        let connection = connection_with(Some(Arc::new(FixedTokenSource {
+            token: "opaque-token".to_owned(),
+        })));
+        let first = connection.refresher().for_new_client();
+        let _ = first.generate_kafka_token();
+        connection.wait_for_initial_token(&first, |_| {}).unwrap();
+
+        let second = connection.refresher().for_new_client();
+        let polls = Cell::new(0);
+        let result = connection.wait_for_initial_token(&second, |_| {
+            polls.set(polls.get() + 1);
+            let _ = second.generate_kafka_token();
+        });
+
+        assert!(result.is_ok());
+        assert!(polls.get() >= 1, "second client skipped its wait");
+    }
+
+    #[test]
+    fn stale_error_of_earlier_client_does_not_fail_later_wait() {
+        let connection = connection_with(Some(Arc::new(FailOnceTokenSource {
+            calls: AtomicUsize::new(0),
+        })));
+        let failed = connection.refresher().for_new_client();
+        assert!(failed.generate_kafka_token().is_err());
+
+        let later = connection.refresher().for_new_client();
+        let result = connection.wait_for_initial_token(&later, |_| {
+            let _ = later.generate_kafka_token();
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn shared_principal_is_visible_from_connection_after_client_served() {
+        let connection = connection_with(Some(Arc::new(FixedTokenSource {
+            token: jwt_with_subject("svc"),
+        })));
+        let client = connection.refresher().for_new_client();
+
+        connection
+            .wait_for_initial_token(&client, |_| {
+                let _ = client.generate_kafka_token();
+            })
+            .unwrap();
+
+        assert_eq!(
+            connection.refresher().last_principal().as_deref(),
+            Some("svc")
+        );
     }
 }
