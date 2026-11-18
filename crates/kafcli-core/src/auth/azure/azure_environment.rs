@@ -26,7 +26,12 @@ pub fn resolve_authority_host(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-        .or_else(|| environment.read_variable(AUTHORITY_HOST_VARIABLE))
+        .or_else(|| {
+            environment
+                .read_variable(AUTHORITY_HOST_VARIABLE)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_AUTHORITY_HOST.to_owned());
     chosen.trim_end_matches('/').to_owned()
 }
@@ -66,6 +71,26 @@ mod tests {
     #[test]
     fn environment_applies_when_config_is_absent() {
         let environment = environment_with_authority(Some("https://env.example/"));
+
+        assert_eq!(
+            resolve_authority_host(None, &environment),
+            "https://env.example"
+        );
+    }
+
+    #[test]
+    fn whitespace_environment_value_counts_as_absent() {
+        let environment = environment_with_authority(Some("   "));
+
+        assert_eq!(
+            resolve_authority_host(None, &environment),
+            DEFAULT_AUTHORITY_HOST
+        );
+    }
+
+    #[test]
+    fn environment_value_is_trimmed() {
+        let environment = environment_with_authority(Some("  https://env.example/  "));
 
         assert_eq!(
             resolve_authority_host(None, &environment),

@@ -69,11 +69,7 @@ fn validate_registry_url(url: &str) -> CoreResult<()> {
             "schema registry url must start with http:// or https://",
         ));
     }
-    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
-    let authority = after_scheme
-        .split_once('/')
-        .map_or(after_scheme, |(authority, _)| authority);
-    if authority.contains('@') {
+    if url_authority(url).contains('@') {
         return Err(build_validation_error(
             "schema registry url must not contain credentials; use auth.secret_ref",
         ));
@@ -89,11 +85,7 @@ fn validate_registry_url(url: &str) -> CoreResult<()> {
 /// The token endpoint must be HTTPS. Plain HTTP is accepted only where the context is not protected.
 fn validate_token_endpoint(config: &OAuthOidcAuthConfig, protected: bool) -> CoreResult<()> {
     let url = config.token_endpoint_url.as_str();
-    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
-    let authority = after_scheme
-        .split_once('/')
-        .map_or(after_scheme, |(authority, _)| authority);
-    if authority.contains('@') {
+    if url_authority(url).contains('@') {
         return Err(build_validation_error(
             "token_endpoint_url must not contain credentials",
         ));
@@ -145,11 +137,18 @@ fn validate_azure_tenant_id(tenant_id: &str) -> CoreResult<()> {
     Ok(())
 }
 
-/// The authority must be HTTPS. Plain HTTP is accepted only for loopback hosts on an unprotected context.
-fn validate_authority_host(authority_host: Option<&str>, protected: bool) -> CoreResult<()> {
+/// The authority must be HTTPS and must not carry credentials. Plain HTTP is accepted only for
+/// loopback hosts on an unprotected context. Used for the context setting; the environment variable
+/// has its own rule, see `validate_environment_authority_host`.
+pub fn validate_authority_host(authority_host: Option<&str>, protected: bool) -> CoreResult<()> {
     let Some(url) = authority_host else {
         return Ok(());
     };
+    if url_authority(url).contains('@') {
+        return Err(build_validation_error(
+            "authority_host must not contain credentials",
+        ));
+    }
     if is_https_url(url) {
         return Ok(());
     }
@@ -171,12 +170,28 @@ fn validate_authority_host(authority_host: Option<&str>, protected: bool) -> Cor
     Ok(())
 }
 
+/// Environment authority (`AZURE_AUTHORITY_HOST`): always HTTPS, never with credentials, and no
+/// plain-HTTP exception, because the value is not part of the context.
+pub fn validate_environment_authority_host(authority_host: &str) -> CoreResult<()> {
+    if !is_https_url(authority_host) || url_authority(authority_host).contains('@') {
+        return Err(build_validation_error(
+            "AZURE_AUTHORITY_HOST must be an https:// URL without credentials",
+        ));
+    }
+    Ok(())
+}
+
+/// Authority part of an `http://` or `https://` URL: host, optional port and optional `user:password@`.
+fn url_authority(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
+    after_scheme
+        .split_once('/')
+        .map_or(after_scheme, |(authority, _)| authority)
+}
+
 /// Host part of an `http://` or `https://` URL, without port or path.
 fn url_host(url: &str) -> &str {
-    let after_scheme = url.split_once("://").map_or("", |(_, rest)| rest);
-    let authority = after_scheme
-        .split_once('/')
-        .map_or(after_scheme, |(authority, _)| authority);
+    let authority = url_authority(url);
     authority
         .split_once(':')
         .map_or(authority, |(host, _)| host)
@@ -609,6 +624,38 @@ mod tests {
             validation_message(validate_context(&bad_tenant, false)),
             "azure tenant_id may contain only letters, digits, '.' and '-'"
         );
+    }
+
+    #[test]
+    fn authority_host_with_credentials_is_refused() {
+        for url in [
+            "http://localhost:x@evil.com",
+            "https://u:p@h",
+            "https://user@idp.example",
+        ] {
+            let message =
+                validation_message(validate_context(&azure_context(Some(url), false), false));
+            assert_eq!(
+                message, "authority_host must not contain credentials",
+                "url {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn environment_authority_must_be_https_without_credentials() {
+        assert!(validate_environment_authority_host("https://login.example").is_ok());
+        for url in [
+            "http://example.com",
+            "http://127.0.0.1:1",
+            "https://u:p@login.example",
+        ] {
+            let message = validation_message(validate_environment_authority_host(url));
+            assert_eq!(
+                message, "AZURE_AUTHORITY_HOST must be an https:// URL without credentials",
+                "url {url}"
+            );
+        }
     }
 
     #[test]
