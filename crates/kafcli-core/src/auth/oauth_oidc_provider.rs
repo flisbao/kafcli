@@ -40,6 +40,10 @@ impl AuthProvider for OAuthOidcAuthProvider {
         if let Some(scope) = &self.config.scope {
             properties.set_plain("sasl.oauthbearer.scope", scope.as_str());
         }
+        // librdkafka verifies the token endpoint with https.ca.location, not ssl.ca.location.
+        if let Some(location) = &self.config.ca_location {
+            properties.set_plain("https.ca.location", location.to_string_lossy());
+        }
         Ok(properties)
     }
 
@@ -101,6 +105,35 @@ mod tests {
             properties.plain_value("sasl.oauthbearer.scope"),
             Some("kafka")
         );
+    }
+
+    #[test]
+    fn oidc_sets_token_endpoint_ca_when_configured() {
+        let mut config = oidc_config("https://idp.example/token", None);
+        config.ca_location = Some(std::path::PathBuf::from("/etc/kafcli/idp-ca.pem"));
+        let provider = OAuthOidcAuthProvider::new(config);
+
+        let properties = provider
+            .build_client_properties(&FixedSecretResolver::returning("client-secret-value"))
+            .unwrap();
+
+        assert_eq!(
+            properties.plain_value("https.ca.location"),
+            Some("/etc/kafcli/idp-ca.pem")
+        );
+        assert_eq!(
+            properties.plain_value("ssl.ca.location"),
+            Some("/etc/kafcli/idp-ca.pem")
+        );
+    }
+
+    #[test]
+    fn oidc_omits_token_endpoint_ca_when_not_configured() {
+        let properties = OAuthOidcAuthProvider::new(oidc_config("https://idp.example/token", None))
+            .build_client_properties(&FixedSecretResolver::returning("client-secret-value"))
+            .unwrap();
+
+        assert_eq!(properties.plain_value("https.ca.location"), None);
     }
 
     #[test]

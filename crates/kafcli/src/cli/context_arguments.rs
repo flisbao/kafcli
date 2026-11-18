@@ -70,7 +70,7 @@ pub struct AddContextArguments {
     /// OAuth scope requested with the token (oauth-oidc auth type)
     #[arg(long)]
     pub scope: Option<String>,
-    /// CA certificate file used to verify the brokers
+    /// CA certificate file used to verify the brokers and the oauth-oidc token endpoint
     #[arg(long)]
     pub ca_location: Option<PathBuf>,
     /// Client certificate file (mtls auth type)
