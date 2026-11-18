@@ -1,5 +1,6 @@
 use crate::cli::watch_interval::parse_watch_interval;
 use kafcli_core::ops::offsets::offset_target::OffsetTarget;
+use std::path::PathBuf;
 use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -39,6 +40,19 @@ Notes:
   On a protected context you must type the group name to confirm."#
     )]
     Set(SetOffsetsArguments),
+    /// Move a stopped consumer group back to the offsets of a backup
+    #[command(after_help = r#"Examples:
+  kafcli offsets restore --file ~/.local/state/kafcli/offsets-backup/pedidos-service-20261118T130000.000Z.json
+  kafcli offsets restore --file pedidos-service-20261118T130000.000Z.json --execute
+
+Notes:
+  Dry-run is the default; nothing is committed until you pass --execute.
+  Only backup files written by 'kafcli offsets set' (under <state dir>/offsets-backup/) are
+  accepted, and only on the context they were taken on.
+  Partitions that had no committed offset in the backup are left as they are now.
+  The restore backs up the current offsets first, so it can be undone the same way.
+  The group must have no active members; on a protected context you must type the group name."#)]
+    Restore(RestoreOffsetsArguments),
 }
 
 #[derive(clap::Args, Debug)]
@@ -115,6 +129,25 @@ impl SetOffsetsArguments {
     }
 }
 
+#[derive(clap::Args, Debug)]
+pub struct RestoreOffsetsArguments {
+    /// Backup file written by 'kafcli offsets set'.
+    #[arg(long, value_name = "PATH")]
+    pub file: PathBuf,
+    /// Commits the backed-up offsets; without it nothing changes.
+    #[arg(long)]
+    pub execute: bool,
+    /// Waits up to DURATION (5s, 2m or seconds, 1s to 3600s) for the group to have no members.
+    #[arg(long, value_name = "DURATION", value_parser = parse_watch_interval)]
+    pub wait_empty: Option<Duration>,
+    /// The broker cannot describe the group, and you know its consumers are stopped.
+    #[arg(long)]
+    pub group_stopped: bool,
+    /// Timeout of each broker request, in seconds.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    pub timeout_seconds: u64,
+}
+
 fn parse_datetime(text: &str) -> Result<OffsetDateTime, String> {
     OffsetDateTime::parse(text, &Rfc3339).map_err(|_| {
         format!(
@@ -139,7 +172,7 @@ mod tests {
         full.extend_from_slice(arguments);
         match OffsetsCli::try_parse_from(full)?.command {
             OffsetsCommand::Set(arguments) => Ok(arguments),
-            OffsetsCommand::Show(_) => panic!("parsed show"),
+            _ => panic!("parsed another subcommand"),
         }
     }
 

@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::error::{CoreError, CoreResult};
 use crate::ops::groups::cluster_offsets_reader::ClusterOffsetsReader;
 use crate::ops::groups::group_snapshot::PartitionWatermarks;
+use crate::ops::offsets::offset_backup::OffsetBackup;
 use crate::ops::offsets::offset_target::{OffsetTarget, ResolvedOffset, resolve_target_offset};
 
 /// One partition of a reset plan. The message counts are `None` when the group has no commit there.
@@ -100,6 +101,66 @@ pub fn plan_offset_reset(
     Ok(builder.finish())
 }
 
+/// Plans moving the group of `backup` back to the offsets the backup holds.
+///
+/// Each backed-up offset goes through the same limit as `offsets set`. A partition that had no
+/// commit in the backup stays as it is, with a warning: kafcli cannot delete a committed offset.
+pub fn plan_offset_restore(
+    reader: &dyn ClusterOffsetsReader,
+    backup: &OffsetBackup,
+) -> CoreResult<OffsetResetPlan> {
+    let mut wanted: BTreeMap<&str, BTreeMap<i32, Option<i64>>> = BTreeMap::new();
+    for partition in &backup.partitions {
+        wanted
+            .entry(partition.topic.as_str())
+            .or_default()
+            .insert(partition.partition, partition.committed_offset);
+    }
+    let mut builder = PlanBuilder::new(&backup.group);
+    for (topic, partitions) in wanted {
+        let existing = read_topic_partitions(reader, topic)?;
+        if let Some(missing) = partitions
+            .keys()
+            .find(|partition| !existing.contains(partition))
+        {
+            return Err(missing_partition_error(topic, *missing));
+        }
+        let restored: Vec<i32> = partitions
+            .iter()
+            .filter(|(_, offset)| offset.is_some())
+            .map(|(partition, _)| *partition)
+            .collect();
+        let committed = if restored.is_empty() {
+            BTreeMap::new()
+        } else {
+            reader.fetch_committed_offsets(
+                &backup.group,
+                &BTreeMap::from([(topic.to_owned(), restored)]),
+            )?
+        };
+        for (partition, backed_up) in partitions {
+            let Some(backed_up) = backed_up else {
+                builder.warn(format!(
+                    "{topic}/{partition} had no committed offset in the backup; its current offset is left unchanged"
+                ));
+                continue;
+            };
+            let current = committed
+                .get(&(topic.to_owned(), partition))
+                .copied()
+                .flatten();
+            let watermarks = reader.fetch_watermarks(topic, partition)?;
+            let resolved =
+                resolve_target_offset(OffsetTarget::Offset(backed_up), current, watermarks, None)
+                    .map_err(|reason| {
+                    CoreError::InvalidInput(format!("partition {topic}/{partition} {reason}"))
+                })?;
+            builder.push(topic, partition, current, watermarks, resolved);
+        }
+    }
+    Ok(builder.finish())
+}
+
 /// The sorted partitions of `topic`; `TopicNotFound` when the cluster does not have it.
 pub(crate) fn read_topic_partitions(
     reader: &dyn ClusterOffsetsReader,
@@ -138,6 +199,10 @@ impl PlanBuilder {
             changes: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    pub(crate) fn warn(&mut self, warning: String) {
+        self.warnings.push(warning);
     }
 
     pub(crate) fn push(
@@ -197,6 +262,7 @@ mod tests {
     use super::*;
     use crate::capability::broker_capabilities::BrokerFamily;
     use crate::ops::groups::fake_cluster_reader::FakeClusterReader;
+    use crate::ops::offsets::offset_backup::BackupPartition;
     use time::OffsetDateTime;
 
     fn reader_with_two_partitions() -> FakeClusterReader {
@@ -372,6 +438,115 @@ mod tests {
 
         assert!(
             matches!(result, Err(CoreError::TopicNotFound(_))),
+            "{result:?}"
+        );
+    }
+
+    fn restore_backup(partitions: Vec<(&str, i32, Option<i64>)>) -> OffsetBackup {
+        OffsetBackup {
+            kafcli_offsets_backup: 1,
+            created_at: "2026-11-18T11:06:40.123Z".to_owned(),
+            context: "dev".to_owned(),
+            group: "g".to_owned(),
+            command: "offsets set".to_owned(),
+            partitions: partitions
+                .into_iter()
+                .map(|(topic, partition, committed_offset)| BackupPartition {
+                    topic: topic.to_owned(),
+                    partition,
+                    committed_offset,
+                    log_start_offset: 0,
+                    log_end_offset: 20,
+                    lag: committed_offset.map(|offset| 20 - offset),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn restore_targets_backup_offsets() {
+        let mut reader = reader_with_two_partitions();
+        commit(&mut reader, 0, 20);
+        commit(&mut reader, 1, 20);
+
+        let plan = plan_offset_restore(
+            &reader,
+            &restore_backup(vec![("t", 0, Some(4)), ("t", 1, Some(8))]),
+        )
+        .unwrap();
+
+        assert_eq!(plan.group, "g");
+        let moves: Vec<(i32, Option<i64>, i64)> = plan
+            .changes
+            .iter()
+            .map(|change| (change.partition, change.current_offset, change.new_offset))
+            .collect();
+        assert_eq!(moves, vec![(0, Some(20), 4), (1, Some(20), 8)]);
+        assert_eq!(plan.total_reprocessed, 28);
+    }
+
+    #[test]
+    fn restore_clamps_offset_below_new_log_start() {
+        let mut reader = reader_with_two_partitions();
+        reader.watermarks.insert(
+            ("t".to_owned(), 0),
+            PartitionWatermarks { low: 5, high: 20 },
+        );
+        commit(&mut reader, 0, 20);
+
+        let plan = plan_offset_restore(&reader, &restore_backup(vec![("t", 0, Some(3))])).unwrap();
+
+        assert_eq!(plan.changes[0].new_offset, 5);
+        assert!(plan.changes[0].clamped);
+        assert_eq!(
+            plan.warnings,
+            vec!["target offset of t/0 was limited to 5 (log start 5, log end 20)".to_owned()]
+        );
+    }
+
+    #[test]
+    fn restore_skips_partitions_without_commit() {
+        let mut reader = reader_with_two_partitions();
+        commit(&mut reader, 0, 20);
+        commit(&mut reader, 1, 20);
+
+        let plan = plan_offset_restore(
+            &reader,
+            &restore_backup(vec![("t", 0, Some(4)), ("t", 1, None)]),
+        )
+        .unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].partition, 0);
+        assert_eq!(
+            plan.warnings,
+            vec![
+                "t/1 had no committed offset in the backup; its current offset is left unchanged"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_of_deleted_topic_fails() {
+        let reader = reader_with_two_partitions();
+
+        let result = plan_offset_restore(&reader, &restore_backup(vec![("gone", 0, Some(4))]));
+
+        assert!(
+            matches!(result, Err(CoreError::TopicNotFound(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn restore_of_deleted_partition_fails() {
+        let reader = reader_with_two_partitions();
+
+        let result = plan_offset_restore(&reader, &restore_backup(vec![("t", 9, Some(4))]));
+
+        assert!(
+            matches!(&result, Err(CoreError::InvalidInput(text)) if text == "partition 9 does not exist in topic 't'"),
             "{result:?}"
         );
     }

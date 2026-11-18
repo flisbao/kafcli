@@ -394,3 +394,47 @@ fn offsets_set_wait_empty_proceeds_after_consumer_leaves() {
         assert_eq!(lag, "0");
     }
 }
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn offsets_restore_returns_to_previous_state() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let (topic, group) = prepare_stopped_group();
+    let before = committed_offsets(&group);
+    set_offsets(
+        directory.path(),
+        &group,
+        &topic.name,
+        &["--to-latest", "--execute"],
+    )
+    .assert()
+    .success();
+    let backups = backup_files(directory.path());
+    assert_eq!(backups.len(), 1);
+
+    build_kafcli_command(directory.path())
+        .args(["offsets", "restore", "--file"])
+        .arg(&backups[0])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DRY RUN"));
+    assert_ne!(committed_offsets(&group), before);
+    build_kafcli_command(directory.path())
+        .args(["offsets", "restore", "--execute", "--file"])
+        .arg(&backups[0])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("committed; backup: "));
+
+    let restored: BTreeMap<i64, String> = committed_offsets(&group)
+        .into_iter()
+        .filter(|(partition, _)| before.contains_key(partition))
+        .collect();
+    assert_eq!(restored, before);
+    assert_eq!(backup_files(directory.path()).len(), 2);
+    assert_eq!(
+        audit_outcomes(directory.path()),
+        vec!["executed", "dry-run", "executed"]
+    );
+}

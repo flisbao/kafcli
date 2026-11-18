@@ -19,6 +19,7 @@ use commands::context::{
 };
 use commands::groups::audit_groups::audit_groups;
 use commands::lag::lag;
+use commands::offsets::restore_offsets::restore_offsets;
 use commands::offsets::set_offsets::set_offsets;
 use commands::offsets::show_offsets::show_offsets;
 use commands::produce::produce;
@@ -184,6 +185,9 @@ fn run(
             }
             OffsetsCommand::Set(set_arguments) => {
                 set_offsets(&execution, resolver, &TerminalPrompter, &set_arguments)
+            }
+            OffsetsCommand::Restore(restore_arguments) => {
+                restore_offsets(&execution, resolver, &TerminalPrompter, &restore_arguments)
             }
         },
         TopLevelCommand::Schema { command } => match command {
