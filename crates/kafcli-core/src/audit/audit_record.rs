@@ -50,7 +50,8 @@ fn format_current_timestamp() -> String {
         .unwrap_or_else(|_| UNKNOWN_TIMESTAMP.to_string())
 }
 
-fn resolve_operator_name() -> String {
+/// The operator name recorded in audit records and in `kafcli-original-operator`.
+pub fn resolve_operator_name() -> String {
     resolve_operator_name_with(|name| std::env::var(name).ok())
 }
 
