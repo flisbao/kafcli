@@ -277,3 +277,66 @@ fn oauth_modes_never_print_secrets() {
     assert!(!refusing.recorded_requests().is_empty());
     assert!(!oidc.recorded_requests().is_empty());
 }
+
+const SASL_PASSWORD_VARIABLE: &str = "KAFCLI_LEAK_SASL_PASSWORD";
+const SASL_PASSWORD: &str = "leak-sasl-password-value";
+
+#[test]
+fn destructive_dry_run_never_prints_secret() {
+    let directory = tempfile::tempdir().unwrap();
+    add_context(
+        directory.path(),
+        "scram",
+        &[
+            "--auth-type",
+            "sasl-scram-512",
+            "--username",
+            "app",
+            "--secret-ref",
+            "env:KAFCLI_LEAK_SASL_PASSWORD",
+        ],
+    );
+    let runs: [&[&str]; 2] = [
+        &[
+            "offsets",
+            "set",
+            "--group",
+            "g",
+            "--topic",
+            "t",
+            "--to-earliest",
+            "--timeout-seconds",
+            "2",
+        ],
+        &[
+            "poison",
+            "find",
+            "--group",
+            "g",
+            "--topic",
+            "t",
+            "--timeout-seconds",
+            "2",
+        ],
+    ];
+
+    for run in runs {
+        for format in ["json", "table"] {
+            let output = build_kafcli_command(directory.path())
+                .env(SASL_PASSWORD_VARIABLE, SASL_PASSWORD)
+                .args(["-vv", "--output", format])
+                .args(run)
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{run:?} reached a closed port");
+            let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            if let Ok(audit) =
+                std::fs::read_to_string(directory.path().join("state").join("audit.log"))
+            {
+                text.push_str(&audit);
+            }
+            assert!(!text.contains(SASL_PASSWORD), "{run:?} {format}: {text}");
+        }
+    }
+}

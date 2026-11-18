@@ -188,6 +188,62 @@ Esta nota vale para todas as saídas de probe e dump deste roteiro: se o comando
 `error:`, apague o arquivo de saída, que fica vazio ou inválido, e registre o erro exato num
 arquivo de notas em `/tmp/kafcli-spike-results/`.
 
+## 4.1 Offsets e commit (plano 05)
+
+Confirma as três linhas do commit no ADR 0001: `OffsetsForTimes`, `OffsetCommit` sem membro ativo e commit com membro ativo. Usa o event hub `kafcli-probe` do passo 4, que já tem mensagens, e um grupo só de teste. O backup e o audit log vão para o diretório de estado do kafcli; o comando aponta o caminho do backup.
+
+Primeiro, deixe o grupo parado com offsets commitados (o `consume` com `--group` commita ao sair):
+
+```bash
+cargo run -q -p kafcli -- --context eh-std consume --topic kafcli-probe \
+  --group kafcli-reset-test --count 3 --output json > /dev/null
+cargo run -q -p kafcli -- --context eh-std offsets show --group kafcli-reset-test \
+  --output json > /tmp/kafcli-spike-results/eh-std-offsets-before.json
+```
+
+1. `OffsetsForTimes`, em dry-run (nada é commitado):
+
+   ```bash
+   cargo run -q -p kafcli -- --context eh-std offsets set --group kafcli-reset-test \
+     --topic kafcli-probe --to-datetime "$(date -u -d '-10 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
+     --output json > /tmp/kafcli-spike-results/eh-std-offsets-for-times.json
+   ```
+
+   Um erro `OffsetsForTimes is not supported by this broker (Azure Event Hubs)` muda a linha para "não suportado".
+
+2. `OffsetCommit` sem membro ativo, seguido do restore. `--group-stopped` é necessário quando o Event Hubs não descreve o grupo:
+
+   ```bash
+   cargo run -q -p kafcli -- --context eh-std offsets set --group kafcli-reset-test \
+     --topic kafcli-probe --to-earliest --execute --group-stopped \
+     --output json > /tmp/kafcli-spike-results/eh-std-offsets-set.json
+   cargo run -q -p kafcli -- --context eh-std offsets show --group kafcli-reset-test \
+     --output json > /tmp/kafcli-spike-results/eh-std-offsets-after-set.json
+   cargo run -q -p kafcli -- --context eh-std offsets restore --execute --group-stopped \
+     --file "$(python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["backup_file"])' < /tmp/kafcli-spike-results/eh-std-offsets-set.json)" \
+     --output json > /tmp/kafcli-spike-results/eh-std-offsets-restore.json
+   cargo run -q -p kafcli -- --context eh-std offsets show --group kafcli-reset-test \
+     --output json > /tmp/kafcli-spike-results/eh-std-offsets-after-restore.json
+   ```
+
+   O `after-set` deve mostrar os offsets no início do log, e o `after-restore` deve bater com o `before`.
+
+3. Commit com membro ativo. Deixe um consumer do grupo de pé num segundo terminal e rode o mesmo `set`:
+
+   ```bash
+   # terminal 2
+   cargo run -q -p kafcli -- --context eh-std consume --topic kafcli-probe \
+     --group kafcli-reset-test --follow > /dev/null
+   # terminal 1, com o consumer de pé
+   cargo run -q -p kafcli -- --context eh-std offsets set --group kafcli-reset-test \
+     --topic kafcli-probe --to-earliest --execute --group-stopped \
+     --output json > /tmp/kafcli-spike-results/eh-std-offsets-active.json 2>&1
+   ```
+
+   Registre se o kafcli recusou pelo `DescribeGroups` (`active member(s)`), se o serviço recusou o commit (`the broker refused the offset commit`) ou se o commit passou. Pare o consumer do terminal 2 com Ctrl+C.
+
+O resultado de cada passo troca a linha correspondente da matriz do ADR 0001 (`OffsetsForTimes`, `OffsetCommit` sem membro ativo e "Commit recusado com membro ativo no grupo").
+
 ## 5. Escritor Avro com o Azure Schema Registry
 
 O script `spike/eventhubs/azure_schema_registry_writer.py` registra o schema fixo
