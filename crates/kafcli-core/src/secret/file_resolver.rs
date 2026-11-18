@@ -130,6 +130,7 @@ mod tests {
             .to_string();
         assert!(error.contains("/nonexistent/kafcli-secret"));
     }
+
     #[cfg(unix)]
     #[test]
     fn rejects_named_pipe_without_blocking() {

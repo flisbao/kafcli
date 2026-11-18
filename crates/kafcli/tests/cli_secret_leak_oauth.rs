@@ -59,12 +59,14 @@ fn entra_issuing_token() -> FakeRegistryServer {
     FakeRegistryServer::start(vec![entra_route(200, body)]).unwrap()
 }
 
-/// Entra endpoint that refuses the request and echoes the client secret in its description,
-/// which the CLI must redact before printing the error.
-fn entra_refusing_and_echoing_secret() -> FakeRegistryServer {
+/// Entra endpoint that refuses the request and echoes the form the CLI sent, with the client
+/// secret in it, in `error_description`. The CLI must redact the secret before printing the error.
+fn entra_refusing_and_echoing_form() -> FakeRegistryServer {
     let body = json!({
         "error": "invalid_client",
-        "error_description": format!("AADSTS7000215: invalid client secret {SP_SECRET} for app-123"),
+        "error_description": format!(
+            "client_secret={SP_SECRET}&client_id=app-123&grant_type=client_credentials"
+        ),
     })
     .to_string();
     FakeRegistryServer::start(vec![entra_route(401, body)]).unwrap()
@@ -175,7 +177,7 @@ fn oauth_modes_never_print_secrets() {
             .collect::<Vec<_>>(),
     );
 
-    let refusing = entra_refusing_and_echoing_secret();
+    let refusing = entra_refusing_and_echoing_form();
     let refusing_directory = tempfile::tempdir().unwrap();
     let refusing_arguments = sp_arguments(&refusing.url());
     add_context(
@@ -231,11 +233,18 @@ fn oauth_modes_never_print_secrets() {
             }
         }
         if label == "azure-sp-secret, refused" {
-            assert!(
-                outputs[0].contains("HTTP 401"),
-                "the refusal never reached the error path: {}",
-                outputs[0]
-            );
+            // The error keeps its status, its error code and the form with the secret redacted.
+            for expected in [
+                "HTTP 401",
+                "invalid_client",
+                "client_secret=*&client_id=app-123&grant_type=client_credentials",
+            ] {
+                assert!(
+                    outputs[0].contains(expected),
+                    "refusal error lacks '{expected}': {}",
+                    outputs[0]
+                );
+            }
         }
     }
 

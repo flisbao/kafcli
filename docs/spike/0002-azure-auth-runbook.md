@@ -159,7 +159,8 @@ kafcli context add eh-cli --brokers "$KAFCLI_NS" --auth-type azure-cli --tenant-
 ```
 
 O `--tenant-id` é opcional. Resultado esperado: `auth_type` = `azure-cli`; `authenticated_principal`
-com o claim `upn` ou `oid` do usuário; `produce` e `consume` como acima. 
+com o claim `upn` ou `oid` do usuário; `produce` e `consume` como acima.
+
 ## 6. `azure-default` (cadeia de credenciais)
 
 Este modo escolhe a primeira fonte disponível no host, nesta ordem: variáveis de service principal
