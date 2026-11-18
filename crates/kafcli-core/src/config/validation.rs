@@ -1,7 +1,7 @@
 use crate::config::azure_credential_model::AzureCredentialConfig;
 use crate::config::model::{AuthConfig, ConnectionContext, OAuthOidcAuthConfig};
 use crate::config::schema_registry_model::{
-    AzureRegistryConfig, RegistryAuthConfig, SchemaRegistryConfig,
+    AzureRegistryConfig, RegistryAuthConfig, RegistryAzureAuthConfig, SchemaRegistryConfig,
 };
 use crate::error::{CoreError, CoreResult};
 
@@ -23,6 +23,7 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
     }
     if let Some(schema_registry) = &context.schema_registry {
         validate_schema_registry(schema_registry, context.protected)?;
+        validate_registry_inheritance(schema_registry, &context.auth)?;
     }
     if let AuthConfig::OAuthOidc(oidc) = &context.auth {
         validate_token_endpoint(oidc, context.protected)?;
@@ -54,8 +55,15 @@ pub fn validate_context(context: &ConnectionContext, insecure_requested: bool) -
 /// Checks the Schema Registry of a context. `protected` adds the production rules: HTTPS and authentication.
 pub fn validate_schema_registry(config: &SchemaRegistryConfig, protected: bool) -> CoreResult<()> {
     validate_registry_url(config.url())?;
-    if let SchemaRegistryConfig::Azure(azure) = config {
-        validate_azure_registry(azure)?;
+    match config {
+        SchemaRegistryConfig::Azure(azure) => validate_azure_registry(azure, protected)?,
+        SchemaRegistryConfig::Confluent(_) => {
+            if matches!(config.auth(), RegistryAuthConfig::Azure(_)) {
+                return Err(build_validation_error(
+                    "schema registry auth 'azure' requires an azure schema_registry",
+                ));
+            }
+        }
     }
     if protected {
         validate_protected_registry(config)?;
@@ -246,20 +254,53 @@ fn url_host(url: &str) -> &str {
         .map_or(authority, |(host, _)| host)
 }
 
-fn validate_azure_registry(azure: &AzureRegistryConfig) -> CoreResult<()> {
+fn validate_azure_registry(azure: &AzureRegistryConfig, protected: bool) -> CoreResult<()> {
     if azure.group.trim().is_empty() {
         return Err(build_validation_error(
             "azure schema registry needs a group",
         ));
     }
-    if matches!(azure.auth, RegistryAuthConfig::MutualTls(_)) {
-        return Err(build_validation_error(
+    match &azure.auth {
+        RegistryAuthConfig::Bearer(_) => Ok(()),
+        RegistryAuthConfig::Azure(auth) => validate_registry_azure_auth(auth, protected),
+        RegistryAuthConfig::MutualTls(_) => Err(build_validation_error(
             "auth type 'mtls' is only supported by the confluent schema registry",
+        )),
+        RegistryAuthConfig::Anonymous | RegistryAuthConfig::Basic(_) => {
+            Err(build_validation_error(
+                "azure schema registry needs auth type 'bearer' with a token_ref or auth type 'azure'",
+            ))
+        }
+    }
+}
+
+/// The registry's own credential must not carry a scope: the Schema Registry scope is fixed.
+fn validate_registry_azure_auth(auth: &RegistryAzureAuthConfig, protected: bool) -> CoreResult<()> {
+    let Some(credential) = &auth.credential else {
+        return Ok(());
+    };
+    if credential.scope().is_some() {
+        return Err(build_validation_error(
+            "scope is not allowed in schema_registry.auth.credential",
         ));
     }
-    if !matches!(azure.auth, RegistryAuthConfig::Bearer(_)) {
+    validate_azure_credential(credential, protected)
+}
+
+/// An `azure` registry without its own credential needs an Azure broker credential to inherit.
+fn validate_registry_inheritance(
+    config: &SchemaRegistryConfig,
+    broker_auth: &AuthConfig,
+) -> CoreResult<()> {
+    let SchemaRegistryConfig::Azure(azure) = config else {
+        return Ok(());
+    };
+    let RegistryAuthConfig::Azure(auth) = &azure.auth else {
+        return Ok(());
+    };
+    if auth.credential.is_none() && broker_auth.azure_credential().is_none() {
         return Err(build_validation_error(
-            "azure schema registry needs auth type 'bearer' with a token_ref",
+            "schema registry auth 'azure' without a credential needs an azure-* broker auth other than azure-connection-string",
         ));
     }
     Ok(())
@@ -323,11 +364,12 @@ mod tests {
     use super::*;
     use crate::config::azure_credential_model::AzureServicePrincipalSecretConfig;
     use crate::config::model::{
-        BearerAuthConfig, OAuthOidcAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
+        AzureConnectionStringConfig, BearerAuthConfig, OAuthOidcAuthConfig, SaslCredentialsConfig,
+        TlsAuthConfig,
     };
     use crate::config::schema_registry_model::{
-        ConfluentRegistryConfig, RegistryBasicAuthConfig, RegistryBearerAuthConfig,
-        RegistryMutualTlsConfig,
+        ConfluentRegistryConfig, RegistryAzureAuthConfig, RegistryBasicAuthConfig,
+        RegistryBearerAuthConfig, RegistryMutualTlsConfig,
     };
     use crate::secret::reference::SecretReference;
 
@@ -501,7 +543,78 @@ mod tests {
 
         assert_eq!(
             message,
-            "azure schema registry needs auth type 'bearer' with a token_ref"
+            "azure schema registry needs auth type 'bearer' with a token_ref or auth type 'azure'"
+        );
+    }
+
+    #[test]
+    fn rejects_azure_auth_on_confluent_registry() {
+        let registry = confluent_registry(
+            "https://sr:8081",
+            RegistryAuthConfig::Azure(RegistryAzureAuthConfig { credential: None }),
+        );
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(
+            message,
+            "schema registry auth 'azure' requires an azure schema_registry"
+        );
+    }
+
+    #[test]
+    fn accepts_azure_auth_on_azure_registry_without_own_credential() {
+        let registry = azure_registry(
+            "pedidos",
+            RegistryAuthConfig::Azure(RegistryAzureAuthConfig { credential: None }),
+        );
+
+        assert!(validate_schema_registry(&registry, true).is_ok());
+    }
+
+    #[test]
+    fn rejects_scope_in_registry_own_credential() {
+        let registry = azure_registry(
+            "pedidos",
+            RegistryAuthConfig::Azure(RegistryAzureAuthConfig {
+                credential: Some(AzureCredentialConfig::ServicePrincipalSecret(
+                    AzureServicePrincipalSecretConfig {
+                        tenant_id: "tenant-1".to_string(),
+                        client_id: "app-1".to_string(),
+                        secret_ref: "env:SR_SP_SECRET".parse::<SecretReference>().unwrap(),
+                        scope: Some("https://other/.default".to_string()),
+                        authority_host: None,
+                    },
+                )),
+            }),
+        );
+
+        let message = validation_message(validate_schema_registry(&registry, false));
+
+        assert_eq!(
+            message,
+            "scope is not allowed in schema_registry.auth.credential"
+        );
+    }
+
+    #[test]
+    fn rejects_azure_auth_inherited_from_connection_string_broker() {
+        let mut connection = context(
+            AuthConfig::AzureConnectionString(AzureConnectionStringConfig {
+                secret_ref: "env:EH_CONNECTION".parse::<SecretReference>().unwrap(),
+            }),
+            false,
+        );
+        connection.schema_registry = Some(azure_registry(
+            "pedidos",
+            RegistryAuthConfig::Azure(RegistryAzureAuthConfig { credential: None }),
+        ));
+
+        let message = validation_message(validate_context(&connection, false));
+
+        assert_eq!(
+            message,
+            "schema registry auth 'azure' without a credential needs an azure-* broker auth other than azure-connection-string"
         );
     }
 

@@ -20,6 +20,10 @@ pub enum CoreError {
     ContextValidation(String),
     #[error("authentication error: {0}")]
     Authentication(String),
+    /// Authentication failure caused by the transport, such as a timeout or a refused connection.
+    /// Same text as `Authentication`; the registry client treats it as transient.
+    #[error("authentication error: {0}")]
+    AuthenticationTransient(String),
     #[error("kafka error: {0}")]
     Kafka(String),
     #[error("topic '{0}' not found in cluster metadata")]

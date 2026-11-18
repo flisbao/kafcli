@@ -472,6 +472,7 @@ fn invalid(text: impl Into<String>) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::model::{AuthConfig, ConnectionContext};
     use crate::config::schema_registry_model::{
         AzureRegistryConfig, ConfluentRegistryConfig, RegistryAuthConfig, SchemaRegistryConfig,
     };
@@ -533,14 +534,24 @@ mod tests {
         }]
     }
 
+    fn context_with_registry(config: SchemaRegistryConfig) -> ConnectionContext {
+        ConnectionContext {
+            brokers: vec!["broker:9093".into()],
+            auth: AuthConfig::Plaintext,
+            protected: false,
+            schema_registry: Some(config),
+        }
+    }
+
     fn confluent_registry(server: &FakeRegistryServer) -> Box<dyn SchemaRegistry> {
-        let config = SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
-            url: server.url(),
-            auth: RegistryAuthConfig::Anonymous,
-            ca_location: None,
-        });
+        let context =
+            context_with_registry(SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
+                url: server.url(),
+                auth: RegistryAuthConfig::Anonymous,
+                ca_location: None,
+            }));
         build_schema_registry(
-            &config,
+            &context,
             &FixedSecretResolver::returning("unused"),
             Duration::from_secs(5),
         )
@@ -548,13 +559,13 @@ mod tests {
     }
 
     fn azure_registry(server: &FakeRegistryServer) -> Box<dyn SchemaRegistry> {
-        let config = SchemaRegistryConfig::Azure(AzureRegistryConfig {
+        let context = context_with_registry(SchemaRegistryConfig::Azure(AzureRegistryConfig {
             url: server.url(),
             group: "pedidos".into(),
             auth: RegistryAuthConfig::Anonymous,
-        });
+        }));
         build_schema_registry(
-            &config,
+            &context,
             &FixedSecretResolver::returning("unused"),
             Duration::from_secs(5),
         )

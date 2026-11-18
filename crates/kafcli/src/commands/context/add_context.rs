@@ -16,8 +16,9 @@ use kafcli_core::config::model::{
     MutualTlsAuthConfig, OAuthOidcAuthConfig, SaslCredentialsConfig, TlsAuthConfig,
 };
 use kafcli_core::config::schema_registry_model::{
-    AzureRegistryConfig, ConfluentRegistryConfig, RegistryAuthConfig, RegistryBasicAuthConfig,
-    RegistryBearerAuthConfig, RegistryMutualTlsConfig, SchemaRegistryConfig,
+    AzureRegistryConfig, ConfluentRegistryConfig, RegistryAuthConfig, RegistryAzureAuthConfig,
+    RegistryBasicAuthConfig, RegistryBearerAuthConfig, RegistryMutualTlsConfig,
+    SchemaRegistryConfig,
 };
 use kafcli_core::config::validation::validate_context;
 use kafcli_core::config::writer::save_configuration;
@@ -244,6 +245,9 @@ fn build_registry_auth_config(
 ) -> anyhow::Result<RegistryAuthConfig> {
     match arguments.registry_auth_type {
         RegistryAuthTypeArgument::None => Ok(RegistryAuthConfig::Anonymous),
+        RegistryAuthTypeArgument::Azure => Ok(RegistryAuthConfig::Azure(RegistryAzureAuthConfig {
+            credential: None,
+        })),
         RegistryAuthTypeArgument::Basic => {
             let (Some(username), Some(secret_text)) = (
                 arguments.registry_username.as_deref(),

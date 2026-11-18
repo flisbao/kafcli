@@ -1,4 +1,5 @@
 use super::registry_text::neutralize_registry_text;
+use crate::auth::token::token_source::TokenSource;
 use crate::config::schema_registry_model::RegistryAuthConfig;
 use crate::error::{CoreError, CoreResult};
 use crate::secret::resolver::SecretResolver;
@@ -8,13 +9,17 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Certificate, Identity, Method, Url};
 use secrecy::{ExposeSecret, SecretString};
+use std::collections::VecDeque;
 use std::error::Error as StdError;
 use std::io::{self, Read};
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const SCHEMA_REGISTRY_ACCEPT: &str = "application/vnd.schemaregistry.v1+json";
+/// Tokens kept for redaction. The previous one may still be in flight when the next is fetched.
+const MAX_REMEMBERED_TOKENS: usize = 2;
 
 /// Blocking HTTP client bound to one schema registry, with its credentials already applied.
 pub struct RegistryHttpClient {
@@ -22,6 +27,10 @@ pub struct RegistryHttpClient {
     base_url: String,
     /// Secret values, kept only to redact them from registry text.
     secret_fragments: Vec<SecretString>,
+    /// Fetches a fresh bearer token before every request (Entra ID). `None` for other modes.
+    token_source: Option<Arc<dyn TokenSource>>,
+    /// The most recent tokens, newest last, kept only to redact them from registry text.
+    token_fragments: Mutex<VecDeque<SecretString>>,
 }
 
 /// Raw answer of the registry. Status outside 2xx is not an error here; the caller interprets it.
@@ -70,13 +79,7 @@ impl RegistryHttpClient {
         timeout: Duration,
         accept: &'static str,
     ) -> CoreResult<Self> {
-        let parsed =
-            Url::parse(base_url).map_err(|_| registry_error("schema registry URL is not valid"))?;
-        if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(registry_error(
-                "schema registry URL must not contain credentials",
-            ));
-        }
+        validate_base_url(base_url)?;
 
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static(accept));
@@ -119,6 +122,11 @@ impl RegistryHttpClient {
                     .map_err(|_| registry_error("could not load client certificate and key"))?;
                 builder = builder.identity(identity);
             }
+            RegistryAuthConfig::Azure(_) => {
+                return Err(registry_error(
+                    "schema registry auth 'azure' needs a token source",
+                ));
+            }
         }
 
         let client = builder
@@ -129,13 +137,45 @@ impl RegistryHttpClient {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             secret_fragments,
+            token_source: None,
+            token_fragments: Mutex::new(VecDeque::new()),
         })
     }
 
-    /// Replaces every known secret in `text` with `*`.
+    /// Builds a client that asks `token_source` for a bearer token before every request. The
+    /// source decides whether to reuse a token; this client never caches one.
+    pub fn new_with_token_source(
+        base_url: &str,
+        token_source: Arc<dyn TokenSource>,
+        timeout: Duration,
+        accept: &'static str,
+    ) -> CoreResult<Self> {
+        validate_base_url(base_url)?;
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static(accept));
+        let client = Client::builder()
+            .timeout(timeout)
+            .default_headers(headers)
+            .build()
+            .map_err(|_| registry_error("could not build the schema registry HTTP client"))?;
+        Ok(Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            secret_fragments: Vec::new(),
+            token_source: Some(token_source),
+            token_fragments: Mutex::new(VecDeque::new()),
+        })
+    }
+
+    /// Replaces every known secret in `text` with `*`, including the recent bearer tokens.
     pub fn redact_secrets(&self, text: &str) -> String {
+        let tokens = self
+            .token_fragments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         self.secret_fragments
             .iter()
+            .chain(tokens.iter())
             .map(|fragment| fragment.expose_secret())
             .filter(|fragment| !fragment.is_empty())
             .fold(text.to_string(), |redacted, fragment| {
@@ -160,6 +200,9 @@ impl RegistryHttpClient {
         let mut request = self.client.request(method, url);
         if let Some(content_type) = content_type {
             request = request.header(CONTENT_TYPE, content_type);
+        }
+        if let Some(authorization) = self.fetch_authorization_header()? {
+            request = request.header(AUTHORIZATION, authorization);
         }
         if let Some(body) = body {
             request = request.body(body);
@@ -198,6 +241,30 @@ impl RegistryHttpClient {
             body,
             headers,
         })
+    }
+
+    /// Asks the token source for a token and returns it as the `Authorization` header. `None` when
+    /// the client has no token source.
+    fn fetch_authorization_header(&self) -> CoreResult<Option<HeaderValue>> {
+        let Some(token_source) = self.token_source.as_ref() else {
+            return Ok(None);
+        };
+        let token = token_source
+            .fetch_access_token()
+            .map_err(registry_authentication_error)?;
+        self.remember_token(token.value.clone());
+        bearer_header(token.value.expose_secret()).map(Some)
+    }
+
+    fn remember_token(&self, token: SecretString) {
+        let mut tokens = self
+            .token_fragments
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        tokens.push_back(token);
+        while tokens.len() > MAX_REMEMBERED_TOKENS {
+            tokens.pop_front();
+        }
     }
 
     /// Names the kind of transport failure and appends its cause chain, without any URL or secret.
@@ -244,6 +311,39 @@ impl RegistryHttpClient {
     }
 }
 
+fn validate_base_url(base_url: &str) -> CoreResult<()> {
+    let parsed =
+        Url::parse(base_url).map_err(|_| registry_error("schema registry URL is not valid"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(registry_error(
+            "schema registry URL must not contain credentials",
+        ));
+    }
+    Ok(())
+}
+
+/// Maps a failed token request. Transport failures stay transient, so the schema cache does not
+/// remember them for the whole run; the message is already redacted by the token source.
+fn registry_authentication_error(error: CoreError) -> CoreError {
+    match error {
+        CoreError::AuthenticationTransient(message) => {
+            transient_registry_error(format!("schema registry authentication failed: {message}"))
+        }
+        CoreError::Authentication(message) => {
+            registry_error(format!("schema registry authentication failed: {message}"))
+        }
+        other => registry_error(format!("schema registry authentication failed: {other}")),
+    }
+}
+
+/// `Authorization: Bearer <token>`, marked sensitive so HTTP tooling does not print it.
+fn bearer_header(token: &str) -> CoreResult<HeaderValue> {
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| registry_error("registry credentials are not a valid HTTP header value"))?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 fn registry_error(message: impl Into<String>) -> CoreError {
     CoreError::SchemaRegistry(message.into())
 }
@@ -281,12 +381,15 @@ fn insert_authorization(headers: &mut HeaderMap, value: &str) -> CoreResult<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::token::access_token::AccessToken;
+    use crate::auth::token::token_source::TokenSource;
     use crate::config::schema_registry_model::{RegistryBasicAuthConfig, RegistryBearerAuthConfig};
     use crate::registry::fake_registry_server::{FakeRegistryServer, FakeRoute};
     use crate::secret::fixed_resolver::FixedSecretResolver;
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
+    use std::time::SystemTime;
 
     fn get_route(path: &str, status: u16, body: String) -> FakeRoute {
         FakeRoute {
@@ -463,6 +566,188 @@ mod tests {
             error,
             "schema registry error: could not read the schema registry response: timed out"
         );
+    }
+
+    /// Token source that returns the listed tokens in order, then repeats the last one.
+    struct ScriptedTokenSource {
+        tokens: Vec<&'static str>,
+        next: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ScriptedTokenSource {
+        fn new(tokens: Vec<&'static str>) -> Arc<Self> {
+            Arc::new(Self {
+                tokens,
+                next: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl TokenSource for ScriptedTokenSource {
+        fn fetch_access_token(&self) -> CoreResult<AccessToken> {
+            let index = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let last = self.tokens.len().saturating_sub(1);
+            let text = self
+                .tokens
+                .get(index.min(last))
+                .copied()
+                .unwrap_or_default();
+            Ok(AccessToken::new(
+                SecretString::from(text),
+                SystemTime::now() + Duration::from_secs(3600),
+            ))
+        }
+
+        fn describe_source(&self) -> &'static str {
+            "scripted"
+        }
+    }
+
+    /// Token source that always fails with the given kind of authentication error.
+    struct FailingTokenSource {
+        transient: bool,
+    }
+
+    impl TokenSource for FailingTokenSource {
+        fn fetch_access_token(&self) -> CoreResult<AccessToken> {
+            if self.transient {
+                Err(CoreError::AuthenticationTransient(
+                    "azure token request failed: timed out".to_owned(),
+                ))
+            } else {
+                Err(CoreError::Authentication(
+                    "azure token request failed (HTTP 401): invalid_client".to_owned(),
+                ))
+            }
+        }
+
+        fn describe_source(&self) -> &'static str {
+            "failing"
+        }
+    }
+
+    fn token_client(
+        server: &FakeRegistryServer,
+        source: Arc<dyn TokenSource>,
+    ) -> RegistryHttpClient {
+        RegistryHttpClient::new_with_token_source(
+            &server.url(),
+            source,
+            Duration::from_secs(5),
+            "application/json",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn azure_registry_sends_fresh_bearer_token_per_request() {
+        let server = FakeRegistryServer::start(vec![get_route("/x", 200, "{}".into())]).unwrap();
+        let client = token_client(&server, ScriptedTokenSource::new(vec!["t1", "t2"]));
+
+        client.send_request(Method::GET, "/x", None, None).unwrap();
+        client.send_request(Method::GET, "/x", None, None).unwrap();
+
+        let requests = server.recorded_requests();
+        assert_eq!(
+            header_of(&requests[0].headers, "authorization"),
+            Some("Bearer t1")
+        );
+        assert_eq!(
+            header_of(&requests[1].headers, "authorization"),
+            Some("Bearer t2")
+        );
+    }
+
+    #[test]
+    fn registry_token_is_redacted_from_errors() {
+        let echoing = FakeRoute {
+            method: "GET".into(),
+            path_and_query:
+                "/$schemaGroups/$schemas/0f1e2d3c4b5a69788796a5b4c3d2e1f0?api-version=2023-07-01"
+                    .into(),
+            status: 500,
+            headers: Vec::new(),
+            body: r#"{"error":{"code":"500","message":"rejected bearer tok-echo-secret"}}"#.into(),
+        };
+        let server = FakeRegistryServer::start(vec![echoing]).unwrap();
+        let registry = crate::registry::azure_registry::AzureSchemaRegistry::new(
+            token_client(&server, ScriptedTokenSource::new(vec!["tok-echo-secret"])),
+            "pedidos".into(),
+        );
+
+        let error = crate::registry::schema_registry::SchemaRegistry::fetch_schema_by_id(
+            &registry,
+            &crate::registry::registered_schema::SchemaId::Azure(
+                "0f1e2d3c4b5a69788796a5b4c3d2e1f0".into(),
+            ),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+
+        assert!(!error.contains("tok-echo-secret"), "error: {error}");
+        assert!(error.contains("HTTP 500"), "error: {error}");
+    }
+
+    #[test]
+    fn redaction_remembers_only_the_last_two_tokens() {
+        let server = FakeRegistryServer::start(vec![get_route("/x", 200, "{}".into())]).unwrap();
+        let client = token_client(
+            &server,
+            ScriptedTokenSource::new(vec!["tok-one", "tok-two", "tok-three"]),
+        );
+
+        for _ in 0..3 {
+            client.send_request(Method::GET, "/x", None, None).unwrap();
+        }
+
+        assert_eq!(
+            client.redact_secrets("tok-one tok-two tok-three"),
+            "tok-one * *"
+        );
+    }
+
+    #[test]
+    fn transient_token_failure_is_a_transient_registry_error() {
+        let server = FakeRegistryServer::start(vec![]).unwrap();
+        let client = token_client(&server, Arc::new(FailingTokenSource { transient: true }));
+
+        let error = client
+            .send_request(Method::GET, "/x", None, None)
+            .err()
+            .unwrap();
+
+        assert!(error.is_transient_registry_failure(), "error: {error:?}");
+        assert_eq!(
+            error.to_string(),
+            "schema registry error: schema registry authentication failed: azure token request failed: timed out"
+        );
+        assert!(server.recorded_requests().is_empty());
+    }
+
+    #[test]
+    fn rejected_token_request_is_a_permanent_registry_error() {
+        let server = FakeRegistryServer::start(vec![]).unwrap();
+        let client = token_client(&server, Arc::new(FailingTokenSource { transient: false }));
+
+        let error = client
+            .send_request(Method::GET, "/x", None, None)
+            .err()
+            .unwrap();
+
+        assert!(!error.is_transient_registry_failure(), "error: {error:?}");
+        assert_eq!(
+            error.to_string(),
+            "schema registry error: schema registry authentication failed: azure token request failed (HTTP 401): invalid_client"
+        );
+    }
+
+    #[test]
+    fn bearer_header_is_marked_sensitive() {
+        let header = bearer_header("tok-123").unwrap();
+
+        assert!(header.is_sensitive());
+        assert_eq!(header.to_str().unwrap(), "Bearer tok-123");
     }
 
     fn header_of<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {

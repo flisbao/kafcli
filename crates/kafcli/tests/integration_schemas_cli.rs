@@ -202,13 +202,18 @@ fn wait_for_registry() {
 /// Registers a schema with the core Confluent client, never with `produce`. Returns the registry id.
 fn register_confluent_schema(subject: &str, kind: SchemaKind, text: &str) -> u32 {
     wait_for_registry();
-    let config = SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
-        url: REGISTRY_URL.to_string(),
-        auth: RegistryAuthConfig::Anonymous,
-        ca_location: None,
-    });
+    let context = ConnectionContext {
+        brokers: vec!["localhost:9092".to_string()],
+        auth: AuthConfig::Plaintext,
+        protected: false,
+        schema_registry: Some(SchemaRegistryConfig::Confluent(ConfluentRegistryConfig {
+            url: REGISTRY_URL.to_string(),
+            auth: RegistryAuthConfig::Anonymous,
+            ca_location: None,
+        })),
+    };
     let registry = build_schema_registry(
-        &config,
+        &context,
         &EnvironmentSecretResolver::from_process_environment(),
         Duration::from_secs(10),
     )

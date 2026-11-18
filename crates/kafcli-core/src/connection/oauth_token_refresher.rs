@@ -98,7 +98,7 @@ impl OAuthTokenRefresher {
 
 fn describe_error(error: CoreError) -> String {
     match error {
-        CoreError::Authentication(message) => message,
+        CoreError::Authentication(message) | CoreError::AuthenticationTransient(message) => message,
         other => other.to_string(),
     }
 }

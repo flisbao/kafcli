@@ -1,5 +1,7 @@
+use crate::config::azure_credential_model::AzureCredentialConfig;
+use crate::config::model::AuthConfig;
 use crate::secret::reference::SecretReference;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::PathBuf;
 
 /// Schema Registry of a context, selected by the `type` field.
@@ -67,6 +69,9 @@ pub enum RegistryAuthConfig {
     Bearer(RegistryBearerAuthConfig),
     #[serde(rename = "mtls")]
     MutualTls(RegistryMutualTlsConfig),
+    /// Entra ID token for the Azure Schema Registry. Only valid on an Azure registry.
+    #[serde(rename = "azure")]
+    Azure(RegistryAzureAuthConfig),
 }
 
 impl RegistryAuthConfig {
@@ -77,6 +82,7 @@ impl RegistryAuthConfig {
             Self::Basic(_) => "basic",
             Self::Bearer(_) => "bearer",
             Self::MutualTls(_) => "mtls",
+            Self::Azure(_) => "azure",
         }
     }
 
@@ -86,7 +92,73 @@ impl RegistryAuthConfig {
             Self::Anonymous | Self::MutualTls(_) => Vec::new(),
             Self::Basic(config) => vec![&config.secret_ref],
             Self::Bearer(config) => vec![&config.token_ref],
+            Self::Azure(config) => config
+                .credential
+                .as_ref()
+                .map_or_else(Vec::new, AzureCredentialConfig::secret_references),
         }
+    }
+}
+
+/// Entra ID authentication of the Azure Schema Registry. Without its own credential the registry
+/// uses the Azure credential of the context's broker auth.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryAzureAuthConfig {
+    /// Own `azure-*` credential, written as the same object the broker auth uses. Only the JSON
+    /// configuration can set it; `--registry-auth-type azure` leaves it out.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "registry_credential_document"
+    )]
+    pub credential: Option<AzureCredentialConfig>,
+}
+
+/// Reads and writes the registry's own credential in the same shape as the broker auth
+/// (`{"type": "azure-sp-secret", ...}`), reusing the `AuthConfig` variants that hold it.
+mod registry_credential_document {
+    use super::*;
+    use serde::de::Error as _;
+    use serde::ser::Error as _;
+
+    pub fn serialize<S: Serializer>(
+        credential: &Option<AzureCredentialConfig>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let Some(credential) = credential else {
+            return serializer.serialize_none();
+        };
+        let document = match credential {
+            AzureCredentialConfig::ServicePrincipalSecret(config) => {
+                AuthConfig::AzureServicePrincipalSecret(config.clone())
+            }
+            AzureCredentialConfig::ServicePrincipalCertificate(config) => {
+                AuthConfig::AzureServicePrincipalCertificate(config.clone())
+            }
+            AzureCredentialConfig::WorkloadIdentity(config) => {
+                AuthConfig::AzureWorkloadIdentity(config.clone())
+            }
+            AzureCredentialConfig::ManagedIdentity(config) => {
+                AuthConfig::AzureManagedIdentity(config.clone())
+            }
+            AzureCredentialConfig::AzureCli(config) => AuthConfig::AzureCli(config.clone()),
+            AzureCredentialConfig::Default(config) => AuthConfig::AzureDefault(config.clone()),
+        };
+        document
+            .serialize(serializer)
+            .map_err(|error| S::Error::custom(error.to_string()))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<AzureCredentialConfig>, D::Error> {
+        let Some(document) = Option::<AuthConfig>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        document.azure_credential().map(Some).ok_or_else(|| {
+            D::Error::custom("schema registry credential must be one of the azure-* types")
+        })
     }
 }
 
@@ -173,6 +245,86 @@ mod tests {
 
         assert_eq!(config.auth(), &RegistryAuthConfig::Anonymous);
         assert_eq!(config.auth().type_name(), "none");
+    }
+
+    #[test]
+    fn azure_auth_without_credential_inherits_broker_credential() {
+        let config: SchemaRegistryConfig = serde_json::from_str(
+            r#"{
+                "type": "azure",
+                "url": "https://prd-ns.servicebus.windows.net",
+                "group": "pedidos",
+                "auth": {"type": "azure"}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.auth().type_name(), "azure");
+        assert!(config.auth().secret_references().is_empty());
+        assert_eq!(
+            config.auth(),
+            &RegistryAuthConfig::Azure(RegistryAzureAuthConfig { credential: None })
+        );
+    }
+
+    #[test]
+    fn azure_auth_with_own_credential_lists_its_secret_reference() {
+        let config: SchemaRegistryConfig = serde_json::from_str(
+            r#"{
+                "type": "azure",
+                "url": "https://prd-ns.servicebus.windows.net",
+                "group": "pedidos",
+                "auth": {
+                    "type": "azure",
+                    "credential": {
+                        "type": "azure-sp-secret",
+                        "tenant_id": "tenant-1",
+                        "client_id": "app-1",
+                        "secret_ref": "env:SR_SP_SECRET"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let references: Vec<String> = config
+            .auth()
+            .secret_references()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(references, vec!["env:SR_SP_SECRET".to_string()]);
+    }
+
+    #[test]
+    fn azure_auth_credential_round_trips_through_json() {
+        let json = r#"{"type":"azure","credential":{"type":"azure-cli","tenant_id":"tenant-1"}}"#;
+        let auth: RegistryAuthConfig = serde_json::from_str(json).unwrap();
+
+        let written = serde_json::to_string(&auth).unwrap();
+
+        assert_eq!(written, json);
+        assert_eq!(
+            serde_json::to_string(&RegistryAuthConfig::Azure(RegistryAzureAuthConfig {
+                credential: None
+            }))
+            .unwrap(),
+            r#"{"type":"azure"}"#
+        );
+    }
+
+    #[test]
+    fn azure_auth_refuses_credential_that_is_not_azure() {
+        let error = serde_json::from_str::<RegistryAuthConfig>(
+            r#"{"type":"azure","credential":{"type":"bearer","token_ref":"env:T"}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("credential must be one of the azure-* types"),
+            "error: {error}"
+        );
     }
 
     #[test]

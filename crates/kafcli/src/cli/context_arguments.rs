@@ -15,7 +15,7 @@ pub enum ContextCommand {
     },
     /// Add a context to the configuration
     #[command(
-        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev-oauth --brokers kafka:9093 --auth-type bearer --token-ref file:/run/secrets/kafka-token\n  kafcli context add ci-oidc --brokers kafka:9093 --auth-type oauth-oidc --token-endpoint-url https://login.example.com/oauth2/token --client-id kafcli --secret-ref env:KAFCLI_CLIENT_SECRET\n  kafcli context add prd-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-sp-secret --tenant-id <tenant> --client-id <app> --secret-ref env:PRD_SP_SECRET --protected\n  kafcli context add aks-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-workload-identity --protected\n  kafcli context add vm-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-managed-identity --protected\n  kafcli context add dev-az --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-cli\n  kafcli context add sdk-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-default --protected\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081"
+        after_help = "Examples:\n  kafcli context add dev --brokers localhost:9092 --auth-type none --use\n  kafcli context add prd --brokers prd:9093 --auth-type sasl-scram-512 --username app --secret-ref env:KAFKA_PASSWORD --protected\n  kafcli context add dev-oauth --brokers kafka:9093 --auth-type bearer --token-ref file:/run/secrets/kafka-token\n  kafcli context add ci-oidc --brokers kafka:9093 --auth-type oauth-oidc --token-endpoint-url https://login.example.com/oauth2/token --client-id kafcli --secret-ref env:KAFCLI_CLIENT_SECRET\n  kafcli context add prd-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-sp-secret --tenant-id <tenant> --client-id <app> --secret-ref env:PRD_SP_SECRET --protected\n  kafcli context add aks-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-workload-identity --protected\n  kafcli context add vm-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-managed-identity --protected\n  kafcli context add dev-az --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-cli\n  kafcli context add sdk-eh --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-default --protected\n  kafcli context add dev --brokers localhost:9092 --auth-type none --registry-type confluent --registry-url https://sr.example:8081\n  kafcli context add prd-eh-sr --brokers prd-ns.servicebus.windows.net:9093 --auth-type azure-sp-secret --tenant-id <tenant> --client-id <app> --secret-ref env:PRD_SP_SECRET --registry-type azure --registry-url https://prd-ns.servicebus.windows.net --registry-group pedidos --registry-auth-type azure"
     )]
     Add(Box<AddContextArguments>),
     /// Make a context the current one
@@ -112,7 +112,7 @@ pub struct AddContextArguments {
     /// Group of the Azure Schema Registry (azure registry type)
     #[arg(long, requires = "registry_type")]
     pub registry_group: Option<String>,
-    /// Authentication of the Schema Registry
+    /// Authentication of the Schema Registry. `azure` reuses the broker's azure-* credential; an own credential is set only in the JSON configuration
     #[arg(long, value_enum, default_value = "none", requires = "registry_type")]
     pub registry_auth_type: RegistryAuthTypeArgument,
     /// Username of the Schema Registry (basic auth type)
@@ -144,6 +144,8 @@ pub enum RegistryAuthTypeArgument {
     Basic,
     Bearer,
     Mtls,
+    /// Entra ID token from the context's azure-* broker credential (azure registry type only)
+    Azure,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

@@ -110,7 +110,7 @@ fn transport_error(error: reqwest::Error, secrets: &[&SecretString]) -> CoreErro
         description.push_str(&current.to_string());
         cause = current.source();
     }
-    auth_error(&format!(
+    transient_auth_error(&format!(
         "azure token request failed: {}",
         redact_token_text(&description, secrets)
     ))
@@ -123,9 +123,9 @@ fn read_error(error: &io::Error, secrets: &[&SecretString]) -> CoreError {
             .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
             .is_some_and(reqwest::Error::is_timeout);
     if timed_out {
-        return auth_error("azure token response timed out");
+        return transient_auth_error("azure token response timed out");
     }
-    auth_error(&format!(
+    transient_auth_error(&format!(
         "azure token response could not be read: {}",
         redact_token_text(&error.to_string(), secrets)
     ))
@@ -147,6 +147,10 @@ fn encode_form(form: &[(&str, &str)]) -> String {
 
 fn auth_error(message: &str) -> CoreError {
     CoreError::Authentication(message.to_owned())
+}
+
+fn transient_auth_error(message: &str) -> CoreError {
+    CoreError::AuthenticationTransient(message.to_owned())
 }
 
 #[cfg(test)]
@@ -200,6 +204,24 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(&error, CoreError::Authentication(message) if message.contains("1 MiB")));
+    }
+
+    #[test]
+    fn connection_failure_is_transient() {
+        let client = TokenHttpClient::new(Duration::from_secs(5)).unwrap();
+
+        let error = client
+            .post_form(
+                "http://127.0.0.1:1/tenant/oauth2/v2.0/token",
+                &[("a", "b")],
+                &[],
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, CoreError::AuthenticationTransient(message) if message.starts_with("azure token request failed: could not connect")),
+            "error: {error:?}"
+        );
     }
 
     #[test]

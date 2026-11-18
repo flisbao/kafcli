@@ -37,5 +37,5 @@ pub fn connect_schema_registry(
     };
     // Checked here, not only by `context add`: a hand-edited context must not reach the registry.
     validate_schema_registry(config, context.protected)?;
-    Ok(build_schema_registry(config, resolver, timeout)?)
+    Ok(build_schema_registry(context, resolver, timeout)?)
 }

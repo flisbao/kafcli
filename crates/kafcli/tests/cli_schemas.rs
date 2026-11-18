@@ -934,3 +934,81 @@ fn produce_dry_run_refuses_anonymous_registry_on_protected_https() {
         .stderr(predicate::str::contains(ANONYMOUS_REFUSED));
     assert!(registry.recorded_requests().is_empty());
 }
+
+const SERVICE_PRINCIPAL_SECRET_VARIABLE: &str = "KAFCLI_CLI_SCHEMAS_SP_SECRET";
+const ENTRA_TENANT: &str = "tenant-1";
+const ENTRA_TOKEN: &str = "entra-token-from-fake";
+
+/// One fake server plays both Entra ID (token route) and the Azure Schema Registry.
+fn entra_and_azure_registry() -> FakeRegistryServer {
+    let token_body = json!({"access_token": ENTRA_TOKEN, "expires_in": 3600}).to_string();
+    FakeRegistryServer::start(vec![
+        route(
+            "POST",
+            &format!("/{ENTRA_TENANT}/oauth2/v2.0/token"),
+            200,
+            &[("Content-Type", "application/json")],
+            token_body,
+        ),
+        route(
+            "GET",
+            &format!("/$schemaGroups/$schemas/{AZURE_SCHEMA_ID}?api-version=2023-07-01"),
+            200,
+            &[("Content-Type", "application/json; serialization=Avro")],
+            AVRO_SCHEMA.to_string(),
+        ),
+    ])
+    .unwrap()
+}
+
+#[test]
+fn schema_get_with_azure_auth_uses_entra_token() {
+    let directory = tempfile::tempdir().unwrap();
+    let server = entra_and_azure_registry();
+    add_context(
+        directory.path(),
+        "dev",
+        &[
+            "--auth-type",
+            "azure-sp-secret",
+            "--tenant-id",
+            ENTRA_TENANT,
+            "--client-id",
+            "app-1",
+            "--secret-ref",
+            &format!("env:{SERVICE_PRINCIPAL_SECRET_VARIABLE}"),
+            "--authority-host",
+            &server.url(),
+            "--use",
+            "--registry-type",
+            "azure",
+            "--registry-url",
+            &server.url(),
+            "--registry-group",
+            "pedidos",
+            "--registry-auth-type",
+            "azure",
+        ],
+    );
+
+    build_kafcli_command(directory.path())
+        .env(SERVICE_PRINCIPAL_SECRET_VARIABLE, "sp-client-secret")
+        .args(["schema", "get", "--id", AZURE_SCHEMA_ID])
+        .assert()
+        .success();
+
+    let requests = server.recorded_requests();
+    let registry_request = requests
+        .iter()
+        .find(|request| request.path_and_query.starts_with("/$schemaGroups/"))
+        .expect("registry request");
+    let authorization = registry_request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.as_str());
+    assert_eq!(
+        authorization,
+        Some(format!("Bearer {ENTRA_TOKEN}").as_str())
+    );
+}
