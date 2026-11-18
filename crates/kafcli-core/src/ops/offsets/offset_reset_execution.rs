@@ -263,17 +263,37 @@ struct ResetAudit<'a> {
 
 impl ResetAudit<'_> {
     fn record(&self, outcome: AuditOutcome, after: Vec<Value>) {
-        let mut record = AuditRecord::new(
-            self.settings.context_name,
+        write_destructive_audit(
+            self.collaborators,
+            self.settings,
             self.command_name,
-            &self.settings.audit_target,
             outcome,
+            self.before.clone(),
+            after,
         );
-        record.before = Some(Value::Array(self.before.clone()));
-        record.after = Some(Value::Array(after));
-        if let Err(error) = self.collaborators.audit.append_record(&record) {
-            tracing::warn!(%error, "audit log not written");
-        }
+    }
+}
+
+/// Appends one audit record of a destructive command. A failed write is logged and ignored; the
+/// binary's writer also warns on stderr.
+pub(crate) fn write_destructive_audit(
+    collaborators: &DestructiveCollaborators,
+    settings: &DestructiveRunSettings,
+    command_name: &str,
+    outcome: AuditOutcome,
+    before: Vec<Value>,
+    after: Vec<Value>,
+) {
+    let mut record = AuditRecord::new(
+        settings.context_name,
+        command_name,
+        &settings.audit_target,
+        outcome,
+    );
+    record.before = Some(Value::Array(before));
+    record.after = Some(Value::Array(after));
+    if let Err(error) = collaborators.audit.append_record(&record) {
+        tracing::warn!(%error, "audit log not written");
     }
 }
 

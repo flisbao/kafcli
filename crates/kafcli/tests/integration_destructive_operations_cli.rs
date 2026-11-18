@@ -521,3 +521,67 @@ fn poison_find_reports_undecodable_message() {
     assert_eq!(candidate["committed_offset"], 5);
     assert!(!state_directory(directory.path()).join("audit.log").exists());
 }
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn poison_skip_copies_to_dlt_and_group_moves_on() {
+    let directory = tempfile::tempdir().unwrap();
+    add_plaintext_context(directory.path());
+    let (topic, group) = prepare_stuck_group();
+    let dead_letter = TopicGuard::create(&format!("{}.DLT", topic.name), 1);
+
+    build_kafcli_command(directory.path())
+        .args(["poison", "skip", "--group", &group, "--topic", &topic.name])
+        .args([
+            "--partition",
+            "0",
+            "--offset",
+            "5",
+            "--dlt",
+            &dead_letter.name,
+        ])
+        .args(["--reason", "bad json", "--execute"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("committed; backup: "));
+
+    let copy = run_kafka_tool(
+        "kafka-console-consumer.sh",
+        &[
+            "--topic",
+            &dead_letter.name,
+            "--from-beginning",
+            "--max-messages",
+            "1",
+            "--timeout-ms",
+            "30000",
+            "--property",
+            "print.headers=true",
+        ],
+    );
+    assert!(copy.contains("kafcli-original-offset:5"), "{copy}");
+    assert!(
+        copy.contains(&format!("kafcli-original-topic:{}", topic.name)),
+        "{copy}"
+    );
+    assert!(copy.contains("not-json"), "{copy}");
+    assert_eq!(
+        committed_offsets(&group).get(&0).map(String::as_str),
+        Some("6")
+    );
+    let next = run_kafka_tool(
+        "kafka-console-consumer.sh",
+        &[
+            "--topic",
+            &topic.name,
+            "--group",
+            &group,
+            "--max-messages",
+            "1",
+            "--timeout-ms",
+            "30000",
+        ],
+    );
+    assert!(next.contains(r#"{"id":6}"#), "{next}");
+    assert_eq!(audit_outcomes(directory.path()), vec!["executed"]);
+}

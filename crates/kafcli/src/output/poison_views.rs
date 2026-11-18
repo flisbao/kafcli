@@ -1,8 +1,10 @@
+use crate::output::offset_reset_views::{describe_group_activity, final_line};
 use crate::output::renderer::TableRenderable;
 use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
 use kafcli_core::ops::poison::poison_finder::{PoisonReport, PoisonStatus};
+use kafcli_core::ops::poison::poison_skip::PoisonSkipOutcome;
 use serde::Serialize;
 
 /// Longest decode error shown in the table, in characters; JSON keeps the whole text.
@@ -61,6 +63,54 @@ impl TableRenderable for PoisonView {
     }
 }
 
+/// The `poison skip` result: what is copied where, and the commit that moves past it.
+#[derive(Debug, Serialize)]
+pub struct PoisonSkipView {
+    #[serde(flatten)]
+    pub outcome: PoisonSkipOutcome,
+}
+
+impl PoisonSkipView {
+    pub fn from_outcome(outcome: PoisonSkipOutcome) -> Self {
+        Self { outcome }
+    }
+}
+
+impl TableRenderable for PoisonSkipView {
+    fn render_table(&self) -> String {
+        let outcome = &self.outcome;
+        let mut lines = vec![format!(
+            "SOURCE {}/{}@{}  DLT {}  COMMIT {} -> {}",
+            sanitize_for_terminal(&outcome.topic),
+            outcome.partition,
+            outcome.offset,
+            sanitize_for_terminal(&outcome.dead_letter_topic),
+            outcome.offset,
+            outcome.offset.saturating_add(1)
+        )];
+        if let Some(delivery) = &outcome.dead_letter_delivery {
+            lines.push(format!(
+                "copied to partition {} offset {}",
+                delivery.partition, delivery.offset
+            ));
+        }
+        lines.push(format!(
+            "headers added: {}",
+            outcome.headers_added.join(", ")
+        ));
+        lines.push(format!(
+            "group state: {}",
+            describe_group_activity(&outcome.group_activity)
+        ));
+        lines.push(final_line(
+            outcome.dry_run,
+            outcome.committed_offset.is_some(),
+            outcome.backup_file.as_ref(),
+        ));
+        lines.join("\n")
+    }
+}
+
 fn status_text(status: &PoisonStatus) -> &'static str {
     match status {
         PoisonStatus::Undecodable => "undecodable",
@@ -90,7 +140,9 @@ fn format_optional(value: Option<i64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kafcli_core::ops::offsets::group_activity::GroupActivity;
     use kafcli_core::ops::poison::poison_finder::{PoisonCandidate, PoisonReport, PoisonStatus};
+    use kafcli_core::ops::poison::poison_skip::PoisonSkipOutcome;
 
     fn report(decode_error: Option<String>) -> PoisonReport {
         PoisonReport {
@@ -131,6 +183,47 @@ mod tests {
             .unwrap_or_default();
         assert!(longest_run < 120, "{longest_run}");
         assert!(table.contains("undecodable"), "{table}");
+    }
+
+    fn skip_outcome(dry_run: bool) -> PoisonSkipOutcome {
+        PoisonSkipOutcome {
+            group: "g".to_owned(),
+            topic: "t".to_owned(),
+            partition: 0,
+            offset: 5,
+            dead_letter_topic: "t.DLT".to_owned(),
+            dry_run,
+            group_activity: GroupActivity::Empty,
+            headers_added: vec!["kafcli-original-topic".to_owned()],
+            dead_letter_delivery: None,
+            committed_offset: (!dry_run).then_some(6),
+            backup_file: (!dry_run).then(|| std::path::PathBuf::from("/b.json")),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn skip_view_shows_source_dlt_and_commit() {
+        let table = PoisonSkipView::from_outcome(skip_outcome(true)).render_table();
+
+        assert!(
+            table.starts_with("SOURCE t/0@5  DLT t.DLT  COMMIT 5 -> 6"),
+            "{table}"
+        );
+        assert!(
+            table.contains("headers added: kafcli-original-topic"),
+            "{table}"
+        );
+        assert!(table.contains("group state: empty"), "{table}");
+        assert!(
+            table.ends_with("DRY RUN: nothing was committed; re-run with --execute to apply"),
+            "{table}"
+        );
+        let executed = PoisonSkipView::from_outcome(skip_outcome(false)).render_table();
+        assert!(
+            executed.ends_with("committed; backup: /b.json"),
+            "{executed}"
+        );
     }
 
     #[test]
