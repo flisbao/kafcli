@@ -38,6 +38,7 @@ A spec §5 previa o crate `azure_identity` para os tokens do Entra ID. Dois fato
 ### `oauth-oidc` nativo
 
 - O modo `oauth-oidc` usa `sasl.oauthbearer.method=oidc`. O librdkafka busca o token no endpoint e o renova sozinho. O kafcli não vê esse token, por isso `authenticated_principal` é `None` nesse modo.
+- Esse modo também não tem falha rápida no primeiro token. `create_token_source` devolve `None` e o librdkafka busca o token por conta própria. Um client secret ruim aparece como erro do librdkafka ou como timeout, e não com a mensagem do Entra ID ou do IdP. Nos modos que têm token source, a espera do primeiro token é fixa em 30 s (`INITIAL_TOKEN_TIMEOUT`) e não depende de `--timeout-seconds`.
 - `ca_location` também vai como `https.ca.location`, porque o librdkafka verifica o endpoint de token com essa propriedade, e não com `ssl.ca.location`.
 
 ### Scope

@@ -119,6 +119,29 @@ fn collect_output(directory: &Path, arguments: &[&str]) -> String {
     text
 }
 
+/// Runs `produce` against the unreachable broker. It fails after the token stage, so it writes a
+/// `failed` audit record, and the test scans that record too. The audit log must exist and hold
+/// the record, otherwise the scan would prove nothing about the audit.
+fn collect_produce_output(directory: &Path) -> String {
+    let text = collect_output(
+        directory,
+        &[
+            "produce",
+            "--topic",
+            "orders",
+            "--value",
+            "{\"n\":1}",
+            "--timeout-seconds",
+            "2",
+        ],
+    );
+    let audit =
+        std::fs::read_to_string(directory.join("state").join("audit.log")).unwrap_or_default();
+    assert!(!audit.is_empty(), "produce wrote no audit record: {text}");
+    assert!(audit.contains("\"command\":\"produce\""), "audit: {audit}");
+    text
+}
+
 /// Runs the three commands the brief names against one context and returns what they printed.
 fn collect_all_outputs(directory: &Path, name: &str) -> Vec<String> {
     vec![
@@ -223,7 +246,8 @@ fn oauth_modes_never_print_secrets() {
         ("oauth-oidc", oidc_directory.path(), "oidc"),
     ];
     for (label, directory, context_name) in scenarios {
-        let outputs = collect_all_outputs(directory, context_name);
+        let mut outputs = collect_all_outputs(directory, context_name);
+        outputs.push(collect_produce_output(directory));
         for output in &outputs {
             for secret in secrets {
                 assert!(

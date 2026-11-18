@@ -7,6 +7,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderName, HeaderValue};
 use reqwest::redirect::Policy;
 use secrecy::SecretString;
 use std::error::Error as StdError;
+use std::fmt;
 use std::io::{self, Read};
 use std::time::Duration;
 
@@ -14,10 +15,21 @@ use std::time::Duration;
 pub const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Raw answer of a token endpoint. A status outside 2xx is not an error here.
-#[derive(Debug)]
 pub struct TokenHttpResponse {
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+/// The body can hold an access token, so `Debug` shows only its length.
+impl fmt::Debug for TokenHttpResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let body = format!("<{} bytes>", self.body.len());
+        formatter
+            .debug_struct("TokenHttpResponse")
+            .field("status", &self.status)
+            .field("body", &body)
+            .finish()
+    }
 }
 
 /// Blocking HTTP client for token endpoints. Redirects are off, bodies are capped at 1 MiB and
@@ -222,6 +234,21 @@ mod tests {
             matches!(&error, CoreError::AuthenticationTransient(message) if message.starts_with("azure token request failed: could not connect")),
             "error: {error:?}"
         );
+    }
+
+    #[test]
+    fn debug_output_hides_body() {
+        let response = TokenHttpResponse {
+            status: 200,
+            body: b"{\"access_token\":\"leak-body-marker\"}".to_vec(),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(!debug.contains("leak-body-marker"), "debug: {debug}");
+        assert!(!debug.contains("123, 34"), "debug: {debug}");
+        assert!(debug.contains("status: 200"), "debug: {debug}");
+        assert!(debug.contains("<35 bytes>"), "debug: {debug}");
     }
 
     #[test]
