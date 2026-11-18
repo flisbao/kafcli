@@ -106,6 +106,23 @@ pub fn execute_offset_reset(
         }
     };
 
+    let planned_current: BTreeMap<(String, i32), Option<i64>> = plan
+        .changes
+        .iter()
+        .map(|change| {
+            (
+                (change.topic.clone(), change.partition),
+                change.current_offset,
+            )
+        })
+        .collect();
+    if let Err(error) =
+        check_committed_offsets_unchanged(collaborators.reader, &plan.group, &planned_current)
+    {
+        audit.record(AuditOutcome::Aborted, audit.after.clone());
+        return Err(error);
+    }
+
     let offsets = plan.offsets_to_commit();
     if offsets.is_empty() {
         warnings.push(NOTHING_TO_COMMIT_WARNING.to_owned());
@@ -188,6 +205,52 @@ pub(crate) fn confirm_group_is_stopped(
     let activity = read_group_activity(collaborators.reader, group);
     check_group_is_stopped(group, &activity, family, settings.group_stopped)?;
     Ok(activity)
+}
+
+/// Between planning and step 3 a consumer may have committed (on shutdown during `--wait-empty`,
+/// or while the operator typed the group name). The plan and the backup would then describe a
+/// state that is gone, so the run stops instead of committing over it.
+pub(crate) fn check_committed_offsets_unchanged(
+    reader: &dyn ClusterOffsetsReader,
+    group: &str,
+    planned: &BTreeMap<(String, i32), Option<i64>>,
+) -> CoreResult<()> {
+    let mut partitions: BTreeMap<String, Vec<i32>> = BTreeMap::new();
+    for (topic, partition) in planned.keys() {
+        partitions
+            .entry(topic.clone())
+            .or_default()
+            .push(*partition);
+    }
+    if partitions.is_empty() {
+        return Ok(());
+    }
+    let committed = reader.fetch_committed_offsets(group, &partitions)?;
+    let describe =
+        |offset: Option<i64>| offset.map_or_else(|| "none".to_owned(), |offset| offset.to_string());
+    let changed: Vec<String> = planned
+        .iter()
+        .filter_map(|((topic, partition), before)| {
+            let now = committed
+                .get(&(topic.clone(), *partition))
+                .copied()
+                .flatten();
+            (now != *before).then(|| {
+                format!(
+                    "{topic}/{partition}: {} -> {}",
+                    describe(*before),
+                    describe(now)
+                )
+            })
+        })
+        .collect();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    Err(CoreError::OperationAborted(format!(
+        "committed offsets of group '{group}' changed after the plan was made ({}); run the command again to see the new plan",
+        changed.join(", ")
+    )))
 }
 
 /// Step 6: the committed offsets read back must be the ones just committed.
@@ -750,5 +813,64 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// Commits `offset` for `g` on `t/0` when asked to confirm, like a consumer that commits its
+    /// position on shutdown while the operator types the group name.
+    struct CommittingPrompter<'a> {
+        reader: &'a FakeClusterReader,
+        offset: i64,
+    }
+
+    impl ConfirmationPrompter for CommittingPrompter<'_> {
+        fn is_interactive(&self) -> bool {
+            true
+        }
+
+        fn confirm_yes_no(&self, _message: &str) -> CoreResult<bool> {
+            Ok(true)
+        }
+
+        fn confirm_typed_value(&self, _message: &str, _expected_value: &str) -> CoreResult<bool> {
+            self.reader
+                .committed_overrides
+                .borrow_mut()
+                .insert(("g".to_owned(), "t".to_owned(), 0), self.offset);
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn commit_made_after_planning_aborts_before_backup() {
+        let harness = Harness::new();
+        let reader = reader_with_group(0);
+        let committer = FakeOffsetCommitter::linked_to(&reader);
+        let prompter = CommittingPrompter {
+            reader: &reader,
+            offset: 17,
+        };
+        let plan = plan_to(&reader, OffsetTarget::Latest);
+        let now = || reader.now();
+        let collaborators = DestructiveCollaborators {
+            reader: &reader,
+            committer: &committer,
+            prompter: &prompter,
+            audit: &harness.audit,
+            now: &now,
+        };
+        let mut settings = harness.settings(true);
+        settings.context_protected = true;
+
+        let result = execute_offset_reset(&collaborators, plan, "offsets set", &settings);
+
+        let error = result.unwrap_err();
+        assert!(matches!(error, CoreError::OperationAborted(_)), "{error:?}");
+        assert_eq!(
+            error.to_string(),
+            "operation aborted: committed offsets of group 'g' changed after the plan was made (t/0: 13 -> 17); run the command again to see the new plan"
+        );
+        assert_eq!(harness.backup_files(), 0);
+        assert!(committer.commits().is_empty());
+        assert_eq!(harness.audit.outcomes(), vec!["aborted"]);
     }
 }

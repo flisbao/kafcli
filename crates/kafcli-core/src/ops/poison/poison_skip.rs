@@ -19,8 +19,8 @@ use crate::ops::offsets::group_activity::{GroupActivity, read_group_activity};
 use crate::ops::offsets::offset_backup::{build_offset_backup, write_offset_backup};
 use crate::ops::offsets::offset_reset_execution::{
     DestructiveCollaborators, DestructiveRunSettings, EVENT_HUBS_COMMIT_WARNING,
-    active_group_dry_run_warning, backup_location_context, confirm_group_is_stopped,
-    verify_committed_offsets, write_destructive_audit,
+    active_group_dry_run_warning, backup_location_context, check_committed_offsets_unchanged,
+    confirm_group_is_stopped, verify_committed_offsets, write_destructive_audit,
 };
 use crate::ops::offsets::offset_reset_plan::{
     PlanBuilder, missing_partition_error, read_topic_partitions,
@@ -244,6 +244,16 @@ pub fn execute_poison_skip(
             return Err(error);
         }
     };
+    // A consumer that left during the wait may have moved past the message; skipping now would
+    // copy a consumed message and rewind the group.
+    if let Err(error) = check_committed_offsets_unchanged(
+        reader,
+        &request.group,
+        &BTreeMap::from([((topic.to_owned(), partition), Some(offset))]),
+    ) {
+        audit(AuditOutcome::Aborted, planned_after(None, None));
+        return Err(error);
+    }
 
     let mut plan = PlanBuilder::new(&request.group);
     plan.push(
@@ -767,5 +777,50 @@ mod tests {
         assert!(after["backup_file"].is_string());
         let keys: Vec<&String> = after.as_object().unwrap().keys().collect();
         assert_eq!(keys.len(), 8, "{keys:?}");
+    }
+
+    #[test]
+    fn group_that_moved_during_wait_is_not_rewound() {
+        let harness = Harness::new(0);
+        harness.reader.group_snapshots.borrow_mut().extend([
+            vec![crate::ops::offsets::offset_reset_execution::tests::group(1)],
+            vec![crate::ops::offsets::offset_reset_execution::tests::group(0)],
+        ]);
+        let committer = FakeOffsetCommitter::linked_to(&harness.reader);
+        // The consumer that leaves during --wait-empty commits past the stuck message.
+        let moving_clock = || {
+            harness
+                .reader
+                .committed_overrides
+                .borrow_mut()
+                .insert(("g".to_owned(), "t".to_owned(), 0), 15);
+            harness.reader.now()
+        };
+        let collaborators = DestructiveCollaborators {
+            reader: &harness.reader,
+            committer: &committer,
+            prompter: &harness.prompter,
+            audit: &harness.audit,
+            now: &moving_clock,
+        };
+        let mut settings = harness.settings(true);
+        settings.wait_empty = Some(Duration::from_secs(30));
+
+        let result = execute_poison_skip(
+            &collaborators,
+            &harness.messages,
+            &harness.publisher,
+            &harness.request(),
+            &settings,
+        );
+
+        assert!(
+            matches!(result, Err(CoreError::OperationAborted(_))),
+            "{result:?}"
+        );
+        assert!(harness.publisher.published().is_empty());
+        assert!(committer.commits().is_empty());
+        assert_eq!(harness.backup_files(), 0);
+        assert_eq!(harness.audit.outcomes(), vec!["aborted"]);
     }
 }
