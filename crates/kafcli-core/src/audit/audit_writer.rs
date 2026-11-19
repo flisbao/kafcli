@@ -51,7 +51,7 @@ impl AuditWriter for JsonLinesAuditWriter {
         }
         let mut file = options.open(&self.log_path)?;
         #[cfg(unix)]
-        crate::io_limits::tighten_mode(&self.log_path, AUDIT_FILE_MODE)?;
+        narrow_existing_log_mode(&file, &self.log_path)?;
         file.write_all(line.as_bytes())?;
         file.sync_all()?;
         Ok(())
@@ -66,10 +66,24 @@ fn create_audit_directory(directory: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(AUDIT_DIRECTORY_MODE);
     }
-    builder.create(directory)?;
-    #[cfg(unix)]
-    crate::io_limits::tighten_mode(directory, AUDIT_DIRECTORY_MODE)?;
-    Ok(())
+    builder.create(directory)
+}
+
+/// A log left readable by older versions is narrowed to 0600. This is best effort: a log the user
+/// may append to but does not own (a shared `KAFCLI_STATE_DIR`) keeps its mode, with a warning,
+/// instead of losing the audit record.
+#[cfg(unix)]
+fn narrow_existing_log_mode(file: &std::fs::File, log_path: &Path) -> std::io::Result<()> {
+    match crate::io_limits::tighten_file_mode(file, AUDIT_FILE_MODE) {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            tracing::warn!(
+                "audit log '{}' is readable by others and kafcli may not change its mode",
+                log_path.display()
+            );
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// A symbolic link at the log path could send the append to another file, so it is refused.
@@ -185,7 +199,8 @@ mod tests {
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&log_path), 0o600);
-        assert_eq!(mode(&state_directory), 0o700);
+        // The state directory may be one the user shares with other tools: it is never changed.
+        assert_eq!(mode(&state_directory), 0o755);
         assert!(
             std::fs::read_to_string(&log_path)
                 .unwrap()

@@ -171,10 +171,7 @@ fn create_backup_directory(directory: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(BACKUP_DIRECTORY_MODE);
     }
-    builder.create(directory)?;
-    #[cfg(unix)]
-    crate::io_limits::tighten_mode(directory, BACKUP_DIRECTORY_MODE)?;
-    Ok(())
+    builder.create(directory)
 }
 
 fn create_new_file(path: &Path) -> std::io::Result<File> {
@@ -294,7 +291,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn tightens_existing_backup_directory_mode() {
+    fn existing_backup_directory_keeps_its_mode() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let backup_directory = directory.path().join("offsets-backup");
@@ -308,7 +305,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o700);
+        assert_eq!(mode, 0o755);
     }
 
     #[test]

@@ -30,14 +30,15 @@ pub fn read_file_at_most(path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>>
     read_at_most(file, limit)
 }
 
-/// Narrows the permissions of `path` to `mode` when group or others have any access. A mode that
-/// is already private, even narrower than `mode`, is left alone.
+/// Narrows the permissions of an open file to `mode` when group or others have any access. A
+/// mode that is already private, even narrower than `mode`, is left alone. It works on the open
+/// descriptor, so a path swapped after opening is never touched.
 #[cfg(unix)]
-pub fn tighten_mode(path: &Path, mode: u32) -> io::Result<()> {
+pub fn tighten_file_mode(file: &File, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let current = std::fs::metadata(path)?.permissions().mode();
+    let current = file.metadata()?.permissions().mode();
     if current & 0o077 != 0 {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
     }
     Ok(())
 }
@@ -74,17 +75,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn tighten_mode_only_narrows_open_permissions() {
+    fn tighten_file_mode_only_narrows_open_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let file = tempfile::NamedTempFile::new().unwrap();
         let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        tighten_mode(file.path(), 0o600).unwrap();
+        tighten_file_mode(file.as_file(), 0o600).unwrap();
         assert_eq!(mode(file.path()), 0o600);
 
         std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o400)).unwrap();
-        tighten_mode(file.path(), 0o600).unwrap();
+        tighten_file_mode(file.as_file(), 0o600).unwrap();
         assert_eq!(mode(file.path()), 0o400);
     }
 }
