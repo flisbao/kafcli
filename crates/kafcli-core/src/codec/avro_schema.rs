@@ -516,6 +516,17 @@ mod tests {
     }
 
     #[test]
+    fn hostile_100k_level_datum_stops_at_recursion_limit() {
+        let error = on_large_stack(|| {
+            schema(NODE)
+                .decode_to_json(&linked_list_bytes(100_000))
+                .expect_err("100k levels must stop at apache-avro's recursion limit")
+        });
+
+        assert_eq!(error, "value is not valid Avro for the schema");
+    }
+
+    #[test]
     fn zero_width_array_with_huge_block_count_is_rejected() {
         let array = schema(r#"{"type":"array","items":"null"}"#);
         // Block count 2^40 of zero-width items, zig-zag encoded, then one more small block.
