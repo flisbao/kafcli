@@ -1,0 +1,138 @@
+name: Release
+
+# Publishes a GitHub release when a version tag is pushed:
+#   git tag v0.0.1 && git push origin v0.0.1
+# The tag must match the workspace version in Cargo.toml.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the tag with Cargo.toml
+        id: version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: check-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            deb_architecture: amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl toolchain and cmake (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+
+      - name: Install cmake (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+          targets: ${{ matrix.target }}
+
+      # See release-build.yml: musl-tools has no musl C++ compiler, and librdkafka's cmake project
+      # enables CXX, so the host g++ is used for the unused C++ wrapper.
+      - name: Build release binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CXX_x86_64_unknown_linux_musl: g++
+        run: cargo build --release --locked --target ${{ matrix.target }} -p kafcli
+
+      - name: Verify version output
+        run: |
+          version_line="$("target/${{ matrix.target }}/release/kafcli" --version)"
+          echo "$version_line"
+          [ "$version_line" = "kafcli $VERSION" ]
+
+      - name: Verify static linking (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          file_report="$(file "target/${{ matrix.target }}/release/kafcli")"
+          echo "$file_report"
+          case "$file_report" in
+            *"statically linked"*|*"static-pie linked"*) ;;
+            *) echo "binary is not statically linked" >&2; exit 1 ;;
+          esac
+
+      - name: Package archive
+        run: |
+          archive="kafcli-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/$archive"
+          cp "target/${{ matrix.target }}/release/kafcli" README.md LICENSE-MIT LICENSE-APACHE "dist/$archive/"
+          tar -C dist -czf "dist/$archive.tar.gz" "$archive"
+          rm -rf "dist/$archive"
+
+      - name: Package .deb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          package="$(packaging/deb/build-deb.sh "target/${{ matrix.target }}/release/kafcli" "$VERSION" "${{ matrix.deb_architecture }}" dist)"
+          dpkg-deb --info "$package"
+          sudo dpkg --install "$package"
+          [ "$(kafcli --version)" = "kafcli $VERSION" ]
+          kafcli help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "kafcli ${{ needs.check-version.outputs.version }}" \
+            --generate-notes \
+            --latest

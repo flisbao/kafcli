@@ -68,12 +68,13 @@ jobs:
       - name: Verify version output
         run: |
           binary="target/${{ matrix.target }}/release/kafcli"
+          expected_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
           version_line="$("$binary" --version)"
           echo "$version_line"
-          case "$version_line" in
-            "kafcli 0.1.0"*) ;;
-            *) echo "unexpected version output: $version_line" >&2; exit 1 ;;
-          esac
+          if [ "$version_line" != "kafcli $expected_version" ]; then
+            echo "unexpected version output: $version_line (expected kafcli $expected_version)" >&2
+            exit 1
+          fi
 
       - name: Verify static linking (Linux)
         if: matrix.os == 'ubuntu-latest'

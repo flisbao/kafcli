@@ -5,5 +5,5 @@ fn prints_version_with_binary_name() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::starts_with("kafcli 0.1.0"));
+        .stdout(predicates::str::starts_with("kafcli 0.0.1"));
 }

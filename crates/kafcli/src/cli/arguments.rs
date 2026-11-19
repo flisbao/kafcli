@@ -13,7 +13,16 @@ use std::path::PathBuf;
 #[command(
     name = "kafcli",
     version,
-    about = "Produce, consume and operate Kafka topics"
+    about = "Produce, consume and operate Kafka topics",
+    after_help = r#"Getting started:
+  kafcli context add local --brokers localhost:9092 --auth-type none --use
+  kafcli context test
+  kafcli produce --topic orders --value '{"id": 1}'
+  kafcli consume --topic orders --from earliest --count 10
+  kafcli lag --all-groups
+
+Run 'kafcli help <COMMAND>' (or 'kafcli <COMMAND> --help') for the options and examples of a
+command. Exit codes: 0 success, 1 error, 2 limit exceeded, 3 aborted by the guard or the user."#
 )]
 pub struct CommandLineArguments {
     #[command(flatten)]

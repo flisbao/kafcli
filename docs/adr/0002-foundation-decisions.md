@@ -71,7 +71,7 @@ A `0001` está reservada ao spike do Event Hubs.
 ### Build de release
 
 - Workflow `release-build.yml` com dois alvos: `x86_64-unknown-linux-musl` (ubuntu, com `musl-tools` e `cmake`) e `aarch64-apple-darwin` (macos, com `cmake` via brew).
-- Verificações pós-build: `kafcli --version` começa com `kafcli 0.1.0`; no Linux, o binário é `statically linked` ou `static-pie linked`; no macOS, `otool -L` não lista `librdkafka` nem `libssl`.
+- Verificações pós-build: `kafcli --version` é `kafcli <versão do Cargo.toml>`; no Linux, o binário é `statically linked` ou `static-pie linked`; no macOS, `otool -L` não lista `librdkafka` nem `libssl`.
 - Windows e Linux aarch64 ficam no plano 06.
 
 ## Consequências

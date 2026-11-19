@@ -4,6 +4,7 @@ description = "Core library for kafcli: configuration, secrets, auth, guards and
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 

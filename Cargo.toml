@@ -3,11 +3,12 @@ resolver = "3"
 members = ["crates/kafcli", "crates/kafcli-core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/OWNER/kafcli"
+authors = ["Felipe Lisbão"]
+repository = "https://github.com/flisbao/kafcli"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
