@@ -1,5 +1,10 @@
 [advisories]
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0370", reason = "unmaintained transitive dep of keyring 4.2 via zbus 5; no safe upgrade until keyring moves to zbus 6 (review on each keyring release)" },
+  { id = "RUSTSEC-2026-0371", reason = "unmaintained transitive dep of keyring 4.2 via zbus 5; no safe upgrade until keyring moves to zbus 6 (review on each keyring release)" },
+  { id = "RUSTSEC-2026-0372", reason = "unmaintained transitive dep of keyring 4.2 via zbus 5; no safe upgrade until keyring moves to zbus 6 (review on each keyring release)" },
+]
 
 [licenses]
 allow = [
