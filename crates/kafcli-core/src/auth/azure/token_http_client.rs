@@ -8,7 +8,7 @@ use reqwest::redirect::Policy;
 use secrecy::SecretString;
 use std::error::Error as StdError;
 use std::fmt;
-use std::io::{self, Read};
+use std::io;
 use std::time::Duration;
 
 /// Timeout of one token request, from the global constraints.
@@ -92,14 +92,10 @@ fn send_and_read(
         .send()
         .map_err(|error| transport_error(error, secrets))?;
     let status = response.status().as_u16();
-    let mut limited = Read::take(response, MAX_TOKEN_RESPONSE_BYTES as u64 + 1);
-    let mut body = Vec::new();
-    limited
-        .read_to_end(&mut body)
-        .map_err(|error| read_error(&error, secrets))?;
-    if body.len() > MAX_TOKEN_RESPONSE_BYTES {
-        return Err(auth_error("azure token response is larger than 1 MiB"));
-    }
+    let limit = u64::try_from(MAX_TOKEN_RESPONSE_BYTES).unwrap_or(u64::MAX);
+    let body = crate::io_limits::read_at_most(response, limit)
+        .map_err(|error| read_error(&error, secrets))?
+        .ok_or_else(|| auth_error("azure token response is larger than 1 MiB"))?;
     Ok(TokenHttpResponse { status, body })
 }
 

@@ -3,7 +3,6 @@ use super::resolver::SecretResolver;
 use crate::error::{CoreError, CoreResult};
 use secrecy::SecretString;
 use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 /// Largest secret file accepted; anything bigger is refused before it is read in full.
@@ -60,13 +59,9 @@ fn read_bounded_secret_file(path: &Path) -> CoreResult<String> {
         return Err(too_large());
     }
 
-    let mut bytes = Vec::new();
-    file.take(MAXIMUM_SECRET_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(unreadable)?;
-    if bytes.len() as u64 > MAXIMUM_SECRET_FILE_BYTES {
-        return Err(too_large());
-    }
+    let bytes = crate::io_limits::read_at_most(file, MAXIMUM_SECRET_FILE_BYTES)
+        .map_err(unreadable)?
+        .ok_or_else(too_large)?;
     String::from_utf8(bytes).map_err(|_| {
         CoreError::SecretResolution(format!(
             "secret file '{}' is not valid UTF-8",

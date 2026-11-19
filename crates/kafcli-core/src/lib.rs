@@ -10,6 +10,7 @@ pub mod config;
 pub mod connection;
 pub mod error;
 pub mod guard;
+pub mod io_limits;
 pub mod message;
 pub mod ops;
 pub mod registry;

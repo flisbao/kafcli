@@ -1,4 +1,5 @@
 use crate::error::{CoreError, CoreResult};
+use crate::io_limits::{MAX_PEM_FILE_BYTES, read_file_at_most};
 use aws_lc_rs::digest::{self, SHA256};
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
@@ -6,7 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use std::fmt;
 use std::path::Path;
@@ -33,13 +34,18 @@ impl ClientCertificate {
     /// Reads a PEM file with the first `CERTIFICATE` block and an unencrypted RSA private key.
     /// Errors name the file, never its content.
     pub fn load_from_pem_file(path: &Path) -> CoreResult<Self> {
-        let text = std::fs::read_to_string(path).map_err(|_| {
+        let unreadable = || {
             CoreError::Authentication(format!(
                 "could not read certificate file '{}'",
                 path.display()
             ))
-        })?;
-        Self::from_pem_source(&text, &path.display().to_string())
+        };
+        let bytes = read_file_at_most(path, MAX_PEM_FILE_BYTES)
+            .map_err(|_| unreadable())?
+            .ok_or_else(unreadable)?;
+        // The PEM holds the private key: keep it in memory that is zeroed when dropped.
+        let text = SecretString::from(String::from_utf8(bytes).map_err(|_| unreadable())?);
+        Self::from_pem_source(text.expose_secret(), &path.display().to_string())
     }
 
     #[cfg(test)]
@@ -140,6 +146,26 @@ fn assertion_error(message: &str) -> CoreError {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn pem_file_larger_than_limit_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.pem");
+        std::fs::write(&path, vec![b'a'; 1024 * 1024 + 1]).unwrap();
+
+        let error = ClientCertificate::load_from_pem_file(&path)
+            .err()
+            .unwrap()
+            .to_string();
+
+        assert!(
+            error.contains(&format!(
+                "could not read certificate file '{}'",
+                path.display()
+            )),
+            "error: {error}"
+        );
+    }
     use aws_lc_rs::digest;
     use aws_lc_rs::encoding::AsDer;
     use aws_lc_rs::rsa::{KeyPair, KeySize};

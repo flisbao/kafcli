@@ -65,16 +65,8 @@ fn read_source_text(source: &InputSource, reader: &mut dyn BufRead) -> CoreResul
 
 /// Reads at most one byte past the limit, so an oversized input is detected without reading it all.
 fn read_limited<R: Read>(reader: R) -> CoreResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader
-        .take(MAXIMUM_INPUT_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_INPUT_BYTES {
-        return Err(CoreError::InvalidInput(
-            "input larger than 64 MiB".to_string(),
-        ));
-    }
-    Ok(bytes)
+    crate::io_limits::read_at_most(reader, MAXIMUM_INPUT_BYTES)?
+        .ok_or_else(|| CoreError::InvalidInput("input larger than 64 MiB".to_string()))
 }
 
 /// A text that parses as one JSON document is one value; otherwise each non-blank line is a value.

@@ -366,12 +366,15 @@ pub fn registry_status_error(status: u16, message: impl Into<String>) -> CoreErr
 }
 
 fn read_file(path: &Path, description: &str) -> CoreResult<Vec<u8>> {
-    std::fs::read(path).map_err(|_| {
+    let unreadable = || {
         registry_error(format!(
             "could not read {description} from '{}'",
             path.display()
         ))
-    })
+    };
+    crate::io_limits::read_file_at_most(path, crate::io_limits::MAX_PEM_FILE_BYTES)
+        .map_err(|_| unreadable())?
+        .ok_or_else(unreadable)
 }
 
 fn insert_authorization(headers: &mut HeaderMap, value: &str) -> CoreResult<()> {

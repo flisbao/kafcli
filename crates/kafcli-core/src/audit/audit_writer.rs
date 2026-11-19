@@ -39,6 +39,7 @@ impl AuditWriter for JsonLinesAuditWriter {
         if let Some(directory) = self.log_path.parent() {
             create_audit_directory(directory)?;
         }
+        refuse_symbolic_link(&self.log_path)?;
         let mut line = serde_json::to_string(record).map_err(map_serialization_error)?;
         line.push('\n');
         let mut options = OpenOptions::new();
@@ -49,6 +50,8 @@ impl AuditWriter for JsonLinesAuditWriter {
             options.mode(AUDIT_FILE_MODE);
         }
         let mut file = options.open(&self.log_path)?;
+        #[cfg(unix)]
+        crate::io_limits::tighten_mode(&self.log_path, AUDIT_FILE_MODE)?;
         file.write_all(line.as_bytes())?;
         file.sync_all()?;
         Ok(())
@@ -63,7 +66,23 @@ fn create_audit_directory(directory: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(AUDIT_DIRECTORY_MODE);
     }
-    builder.create(directory)
+    builder.create(directory)?;
+    #[cfg(unix)]
+    crate::io_limits::tighten_mode(directory, AUDIT_DIRECTORY_MODE)?;
+    Ok(())
+}
+
+/// A symbolic link at the log path could send the append to another file, so it is refused.
+fn refuse_symbolic_link(log_path: &Path) -> CoreResult<()> {
+    match std::fs::symlink_metadata(log_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(CoreError::Io(std::io::Error::other(format!(
+                "audit log '{}' is a symbolic link",
+                log_path.display()
+            ))))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn map_serialization_error(error: serde_json::Error) -> CoreError {
@@ -124,6 +143,54 @@ mod tests {
             & 0o777;
         assert_eq!(directory_mode, 0o700);
         assert_eq!(file_mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_audit_log() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("elsewhere.log");
+        std::fs::write(&target, "original\n").unwrap();
+        let state_directory = root.path().join("kafcli");
+        std::fs::create_dir(&state_directory).unwrap();
+        std::os::unix::fs::symlink(&target, state_directory.join(AUDIT_LOG_FILE_NAME)).unwrap();
+        let writer = JsonLinesAuditWriter::create_in_directory(&state_directory);
+
+        let error = writer
+            .append_record(&sample_record(AuditOutcome::Executed))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("is a symbolic link"), "error: {error}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tightens_existing_audit_log_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let state_directory = root.path().join("kafcli");
+        std::fs::create_dir(&state_directory).unwrap();
+        std::fs::set_permissions(&state_directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log_path = state_directory.join(AUDIT_LOG_FILE_NAME);
+        std::fs::write(&log_path, "old\n").unwrap();
+        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let writer = JsonLinesAuditWriter::create_in_directory(&state_directory);
+
+        writer
+            .append_record(&sample_record(AuditOutcome::Executed))
+            .unwrap();
+
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&log_path), 0o600);
+        assert_eq!(mode(&state_directory), 0o700);
+        assert!(
+            std::fs::read_to_string(&log_path)
+                .unwrap()
+                .starts_with("old\n")
+        );
     }
 
     #[test]

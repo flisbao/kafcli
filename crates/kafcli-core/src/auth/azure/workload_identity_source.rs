@@ -3,9 +3,9 @@ use super::token_http_client::TokenHttpClient;
 use crate::auth::token::access_token::AccessToken;
 use crate::auth::token::token_source::TokenSource;
 use crate::error::{CoreError, CoreResult};
+use crate::io_limits::read_at_most;
 use secrecy::{ExposeSecret, SecretString};
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const CLIENT_ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
@@ -77,16 +77,13 @@ fn read_federated_token(path: &Path) -> CoreResult<SecretString> {
         ))
     };
     let file = File::open(path).map_err(|_| unreadable())?;
-    let mut contents = String::new();
-    file.take(MAX_TOKEN_FILE_BYTES + 1)
-        .read_to_string(&mut contents)
-        .map_err(|_| unreadable())?;
-    if contents.len() as u64 > MAX_TOKEN_FILE_BYTES {
+    let Some(bytes) = read_at_most(file, MAX_TOKEN_FILE_BYTES).map_err(|_| unreadable())? else {
         return Err(CoreError::Authentication(format!(
             "federated token file '{}' is larger than 64 KiB",
             path.display()
         )));
-    }
+    };
+    let contents = String::from_utf8(bytes).map_err(|_| unreadable())?;
     let token = contents.trim();
     if token.is_empty() {
         return Err(CoreError::Authentication(format!(

@@ -1,13 +1,14 @@
 //! Offset backups written before a destructive change, and read back by `offsets restore`.
 
 use std::fs::{DirBuilder, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::{CoreError, CoreResult};
+use crate::io_limits::read_file_at_most;
 use crate::message::timestamp_text::format_rfc3339_millis;
 use crate::ops::offsets::offset_reset_plan::OffsetResetPlan;
 
@@ -116,17 +117,8 @@ pub fn write_offset_backup(directory: &Path, backup: &OffsetBackup) -> CoreResul
 
 /// Reads and checks a backup file: at most 16 MiB, valid JSON, version 1, some partitions.
 pub fn read_offset_backup(path: &Path) -> CoreResult<OffsetBackup> {
-    let file = File::open(path)?;
-    if file.metadata()?.len() > MAX_BACKUP_FILE_BYTES {
-        return Err(oversized_backup_error());
-    }
-    let mut bytes = Vec::new();
-    // Second barrier, for a file that grows between the size check and the read.
-    file.take(MAX_BACKUP_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_BACKUP_FILE_BYTES {
-        return Err(oversized_backup_error());
-    }
+    let bytes =
+        read_file_at_most(path, MAX_BACKUP_FILE_BYTES)?.ok_or_else(oversized_backup_error)?;
     let backup: OffsetBackup = serde_json::from_slice(&bytes).map_err(|error| {
         // serde_json errors name a line, a column and the expected token, never the input.
         CoreError::InvalidInput(format!("backup file is not valid JSON: {error}"))
@@ -179,7 +171,10 @@ fn create_backup_directory(directory: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(BACKUP_DIRECTORY_MODE);
     }
-    builder.create(directory)
+    builder.create(directory)?;
+    #[cfg(unix)]
+    crate::io_limits::tighten_mode(directory, BACKUP_DIRECTORY_MODE)?;
+    Ok(())
 }
 
 fn create_new_file(path: &Path) -> std::io::Result<File> {
@@ -295,6 +290,25 @@ mod tests {
             |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&backup_directory), 0o700);
         assert_eq!(mode(&path), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tightens_existing_backup_directory_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let backup_directory = directory.path().join("offsets-backup");
+        fs::create_dir(&backup_directory).unwrap();
+        fs::set_permissions(&backup_directory, fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_offset_backup(&backup_directory, &backup("g")).unwrap();
+
+        let mode = fs::metadata(&backup_directory)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[test]

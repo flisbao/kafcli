@@ -5,7 +5,7 @@
 //! never parses a schema taken from a message.
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use super::avro_schema::AvroSchema;
@@ -440,13 +440,9 @@ pub fn read_schema_file(path: &Path) -> CoreResult<String> {
     let unreadable =
         |error: io::Error| invalid(format!("schema file '{shown}' could not be read: {error}"));
     let file = File::open(path).map_err(unreadable)?;
-    let mut bytes = Vec::new();
-    file.take(MAX_SCHEMA_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(unreadable)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SCHEMA_FILE_BYTES {
-        return Err(invalid("schema file larger than 1 MiB"));
-    }
+    let bytes = crate::io_limits::read_at_most(file, MAX_SCHEMA_FILE_BYTES)
+        .map_err(unreadable)?
+        .ok_or_else(|| invalid("schema file larger than 1 MiB"))?;
     String::from_utf8(bytes).map_err(|_| invalid("schema file is not valid UTF-8"))
 }
 

@@ -5,7 +5,7 @@ use figment::Figment;
 use figment::providers::{Env, Serialized};
 use serde_json::{Map, Value};
 use std::fs::File;
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::path::Path;
 
 /// Prefix of the environment variables that override configuration values.
@@ -85,21 +85,13 @@ fn read_configuration_source(config_path: &Path) -> CoreResult<String> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(String::new()),
         Err(error) => return Err(error.into()),
     };
-    let mut source = String::new();
-    file.take(MAXIMUM_CONFIGURATION_BYTES + 1)
-        .read_to_string(&mut source)
-        .map_err(|error| match error.kind() {
-            ErrorKind::InvalidData => {
-                CoreError::Configuration("configuration file is not valid UTF-8".to_string())
-            }
-            _ => error.into(),
-        })?;
-    if source.len() as u64 > MAXIMUM_CONFIGURATION_BYTES {
+    let Some(bytes) = crate::io_limits::read_at_most(file, MAXIMUM_CONFIGURATION_BYTES)? else {
         return Err(CoreError::Configuration(format!(
             "configuration file is larger than {MAXIMUM_CONFIGURATION_BYTES} bytes"
         )));
-    }
-    Ok(source)
+    };
+    String::from_utf8(bytes)
+        .map_err(|_| CoreError::Configuration("configuration file is not valid UTF-8".to_string()))
 }
 
 #[cfg(test)]
