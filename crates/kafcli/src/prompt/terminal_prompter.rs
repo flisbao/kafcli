@@ -69,6 +69,13 @@ mod tests {
     }
 
     #[test]
+    fn prompt_neutralizes_bidi_in_question() {
+        let line = format_prompt_line("Type 'orders\u{202E}' to confirm:");
+
+        assert_eq!(line, "Type 'orders?' to confirm: ");
+    }
+
+    #[test]
     fn reports_interactive_only_when_both_streams_are_terminals() {
         assert!(decide_interactivity(true, true));
         assert!(!decide_interactivity(true, false));

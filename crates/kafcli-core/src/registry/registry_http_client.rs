@@ -83,7 +83,10 @@ impl RegistryHttpClient {
 
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static(accept));
-        let mut builder = Client::builder().timeout(timeout);
+        // A registry never redirects its API; following one could carry the credential elsewhere.
+        let mut builder = Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none());
         let mut secret_fragments = Vec::new();
 
         if let Some(path) = ca_location {
@@ -155,6 +158,7 @@ impl RegistryHttpClient {
         headers.insert(ACCEPT, HeaderValue::from_static(accept));
         let client = Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .default_headers(headers)
             .build()
             .map_err(|_| registry_error("could not build the schema registry HTTP client"))?;
@@ -492,6 +496,46 @@ mod tests {
             error,
             "schema registry error: schema registry URL must not contain credentials"
         );
+    }
+
+    #[test]
+    fn registry_does_not_follow_redirects() {
+        use std::io::Write;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&requests);
+        // Detached: it waits on accept until the test process ends.
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = [0u8; 2048];
+                let read = stream.read(&mut request).unwrap_or(0);
+                seen.fetch_add(1, Ordering::SeqCst);
+                let answer: &[u8] = if request[..read].starts_with(b"GET /elsewhere") {
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                } else {
+                    b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                let _ = stream.write_all(answer);
+            }
+        });
+        let client = RegistryHttpClient::new(
+            &url,
+            &RegistryAuthConfig::Anonymous,
+            None,
+            &FixedSecretResolver::returning("unused"),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let response = client.send_request(Method::GET, "/x", None, None).unwrap();
+
+        assert_eq!(response.status, 307);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     #[test]
