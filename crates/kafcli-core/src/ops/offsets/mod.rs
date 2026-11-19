@@ -1,5 +1,6 @@
 //! Offset changes on consumer groups: commit, reset plans, group state checks and backups.
 
+pub(crate) mod destructive_preflight;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake_offset_committer;
 pub mod group_activity;

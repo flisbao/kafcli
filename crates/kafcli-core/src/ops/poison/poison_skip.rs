@@ -15,12 +15,13 @@ use crate::capability::broker_capabilities::BrokerFamily;
 use crate::error::{CoreError, CoreResult};
 use crate::message::record_header::RecordHeader;
 use crate::message::timestamp_text::format_rfc3339_millis;
+use crate::ops::offsets::destructive_preflight::confirm_and_check;
 use crate::ops::offsets::group_activity::{GroupActivity, read_group_activity};
 use crate::ops::offsets::offset_backup::{build_offset_backup, write_offset_backup};
 use crate::ops::offsets::offset_reset_execution::{
     DestructiveCollaborators, DestructiveRunSettings, EVENT_HUBS_COMMIT_WARNING,
-    active_group_dry_run_warning, backup_location_context, check_committed_offsets_unchanged,
-    confirm_group_is_stopped, verify_committed_offsets, write_destructive_audit,
+    active_group_dry_run_warning, backup_location_context, verify_committed_offsets,
+    write_destructive_audit,
 };
 use crate::ops::offsets::offset_reset_plan::{
     PlanBuilder, missing_partition_error, read_topic_partitions,
@@ -231,12 +232,15 @@ pub fn execute_poison_skip(
         return Ok(outcome);
     }
 
-    outcome.group_activity = match confirm_group_is_stopped(
+    // The offset check covers a consumer that left during the wait after moving past the message;
+    // skipping then would copy a consumed message and rewind the group.
+    outcome.group_activity = match confirm_and_check(
         collaborators,
+        settings,
         &request.group,
         outcome.group_activity.clone(),
         &format!("{COMMAND_NAME} for group {}", request.group),
-        settings,
+        &BTreeMap::from([((topic.to_owned(), partition), Some(offset))]),
     ) {
         Ok(activity) => activity,
         Err(error) => {
@@ -244,16 +248,6 @@ pub fn execute_poison_skip(
             return Err(error);
         }
     };
-    // A consumer that left during the wait may have moved past the message; skipping now would
-    // copy a consumed message and rewind the group.
-    if let Err(error) = check_committed_offsets_unchanged(
-        reader,
-        &request.group,
-        &BTreeMap::from([((topic.to_owned(), partition), Some(offset))]),
-    ) {
-        audit(AuditOutcome::Aborted, planned_after(None, None));
-        return Err(error);
-    }
 
     let mut plan = PlanBuilder::new(&request.group);
     plan.push(

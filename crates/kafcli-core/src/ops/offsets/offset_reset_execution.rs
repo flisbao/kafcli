@@ -20,6 +20,7 @@ use crate::guard::guard_enforcer::enforce_guard;
 use crate::guard::guard_request::GuardRequest;
 use crate::guard::operation_level::OperationLevel;
 use crate::ops::groups::cluster_offsets_reader::ClusterOffsetsReader;
+use crate::ops::offsets::destructive_preflight::confirm_and_check;
 use crate::ops::offsets::group_activity::{
     GroupActivity, check_group_is_stopped, read_group_activity, wait_until_group_empty,
 };
@@ -92,20 +93,6 @@ pub fn execute_offset_reset(
         });
     }
 
-    let group_activity = match confirm_group_is_stopped(
-        collaborators,
-        &plan.group,
-        first_activity,
-        &format!("{command_name} for group {}", plan.group),
-        settings,
-    ) {
-        Ok(activity) => activity,
-        Err(error) => {
-            audit.record(AuditOutcome::Aborted, audit.after.clone());
-            return Err(error);
-        }
-    };
-
     let planned_current: BTreeMap<(String, i32), Option<i64>> = plan
         .changes
         .iter()
@@ -116,12 +103,20 @@ pub fn execute_offset_reset(
             )
         })
         .collect();
-    if let Err(error) =
-        check_committed_offsets_unchanged(collaborators.reader, &plan.group, &planned_current)
-    {
-        audit.record(AuditOutcome::Aborted, audit.after.clone());
-        return Err(error);
-    }
+    let group_activity = match confirm_and_check(
+        collaborators,
+        settings,
+        &plan.group,
+        first_activity,
+        &format!("{command_name} for group {}", plan.group),
+        &planned_current,
+    ) {
+        Ok(activity) => activity,
+        Err(error) => {
+            audit.record(AuditOutcome::Aborted, audit.after.clone());
+            return Err(error);
+        }
+    };
 
     let offsets = plan.offsets_to_commit();
     if offsets.is_empty() {
@@ -742,6 +737,35 @@ pub(crate) mod tests {
             "{text}"
         );
         assert_eq!(harness.audit.outcomes(), vec!["failed"]);
+    }
+
+    #[test]
+    fn reset_with_nothing_to_commit_still_asks_confirmation_first() {
+        let harness = Harness::new();
+        let reader = reader_with_group(0);
+        let committer = FakeOffsetCommitter::new();
+        let plan = plan_to(&reader, OffsetTarget::Offset(13));
+        let now = || reader.now();
+        let collaborators = DestructiveCollaborators {
+            reader: &reader,
+            committer: &committer,
+            prompter: &harness.prompter,
+            audit: &harness.audit,
+            now: &now,
+        };
+        let mut settings = harness.settings(true);
+        settings.context_protected = true;
+
+        let outcome = execute_offset_reset(&collaborators, plan, "offsets set", &settings).unwrap();
+
+        assert!(!outcome.committed);
+        assert_eq!(harness.prompter.calls.get(), 1);
+        assert_eq!(harness.backup_files(), 0);
+        assert_eq!(harness.audit.outcomes(), vec!["executed"]);
+        assert_eq!(
+            harness.audit.records.borrow()[0]["after"],
+            serde_json::json!([])
+        );
     }
 
     #[test]
