@@ -31,6 +31,8 @@ use time::OffsetDateTime;
 /// Most messages one run may prepare, counting every repetition.
 const MAXIMUM_MESSAGES: u64 = 10_000_000;
 const QUEUE_BUFFERING_MAX_MESSAGES: &str = "100000";
+/// Local producer queue of 64 MiB, instead of librdkafka's 1 GiB default.
+const QUEUE_BUFFERING_MAX_KBYTES: &str = "65536";
 const QUEUE_FULL_POLL: Duration = Duration::from_millis(100);
 const MAXIMUM_REPORTED_DELIVERIES: usize = 1_000;
 /// Smallest message timeout given to librdkafka, so a short `--timeout` still allows retries.
@@ -111,40 +113,91 @@ fn prepare_messages_with_byte_limit(
     now: OffsetDateTime,
     byte_limit: usize,
 ) -> CoreResult<Vec<PreparedMessage>> {
-    if inputs.is_empty() {
-        return Ok(Vec::new());
+    let mut prepared = Vec::new();
+    let mut prepared_bytes: usize = 0;
+    for message in stream_messages(inputs, options, encoder, environment, now)? {
+        let message = message?;
+        prepared_bytes = prepared_bytes.saturating_add(prepared_message_bytes(&message));
+        if prepared_bytes > byte_limit {
+            return Err(CoreError::InvalidInput(
+                "prepared messages exceed 1 GiB".to_string(),
+            ));
+        }
+        prepared.push(message);
     }
+    Ok(prepared)
+}
+
+/// Prepares the messages of a run one at a time, in the order `prepare_messages` returns them.
+///
+/// Only the message being sent is held in memory. After the first error the stream ends.
+pub fn stream_messages<'a>(
+    inputs: &'a [ProduceInput],
+    options: &'a ProduceOptions,
+    encoder: &'a dyn ValueEncoder,
+    environment: &'a dyn EnvironmentLookup,
+    now: OffsetDateTime,
+) -> CoreResult<MessageStream<'a>> {
     let input_count = u64::try_from(inputs.len()).unwrap_or(u64::MAX);
-    let total = options.count.saturating_mul(input_count);
+    let total = if inputs.is_empty() {
+        0
+    } else {
+        options.count.saturating_mul(input_count)
+    };
     if total > MAXIMUM_MESSAGES {
         return Err(CoreError::InvalidInput(format!(
             "too many messages: {total} (limit {MAXIMUM_MESSAGES})"
         )));
     }
+    Ok(MessageStream {
+        inputs,
+        preparer: MessagePreparer {
+            options,
+            encoder,
+            environment,
+            now,
+            state: TemplateState::new(),
+        },
+        remaining: total,
+        next_input: 0,
+    })
+}
 
-    let mut preparer = MessagePreparer {
-        options,
-        encoder,
-        environment,
-        now,
-        state: TemplateState::new(),
-    };
-    let mut prepared = Vec::new();
-    let mut prepared_bytes: usize = 0;
-    for _ in 0..options.count {
-        for input in inputs {
-            let message = preparer.prepare(input)?;
-            prepared_bytes = prepared_bytes.saturating_add(prepared_message_bytes(&message));
-            if prepared_bytes > byte_limit {
-                return Err(CoreError::InvalidInput(
-                    "prepared messages exceed 1 GiB".to_string(),
-                ));
+/// Iterator returned by `stream_messages`.
+pub struct MessageStream<'a> {
+    inputs: &'a [ProduceInput],
+    preparer: MessagePreparer<'a>,
+    /// Messages still to prepare; zero once the stream ended or failed.
+    remaining: u64,
+    next_input: usize,
+}
+
+impl Iterator for MessageStream<'_> {
+    type Item = CoreResult<PreparedMessage>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let input = self.inputs.get(self.next_input)?;
+        match self.preparer.prepare(input) {
+            Ok(message) => {
+                self.remaining -= 1;
+                self.next_input = (self.next_input + 1) % self.inputs.len();
+                self.preparer.state.advance();
+                Some(Ok(message))
             }
-            prepared.push(message);
-            preparer.state.advance();
+            Err(error) => {
+                self.remaining = 0;
+                Some(Err(error))
+            }
         }
     }
-    Ok(prepared)
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = usize::try_from(self.remaining).unwrap_or(usize::MAX);
+        (0, Some(remaining))
+    }
 }
 
 /// Bytes a prepared message holds: key, value, and header names and values.
@@ -176,7 +229,7 @@ pub fn produce_messages(
     resolver: &dyn SecretResolver,
     settings: &ConnectionSettings,
     options: &ProduceOptions,
-    messages: Vec<PreparedMessage>,
+    messages: &mut dyn Iterator<Item = CoreResult<PreparedMessage>>,
 ) -> CoreResult<ProduceReport> {
     let tuning = resolve_producer_tuning(detect_broker_family(context));
     let connection = build_kafka_connection(context, resolver, settings)?;
@@ -201,7 +254,20 @@ pub fn produce_messages(
     let mut tally = DeliveryTally::default();
     let mut progress = ProgressClock::new(Instant::now(), options.timeout);
     let mut limiter = options.rate_per_second.map(RateLimiter::new);
-    for message in &messages {
+    let total = messages
+        .size_hint()
+        .1
+        .map_or(u64::MAX, |upper| u64::try_from(upper).unwrap_or(u64::MAX));
+    let mut stream_error = None;
+    for item in messages {
+        let message = match item {
+            Ok(message) => message,
+            Err(error) => {
+                stream_error = Some(error);
+                break;
+            }
+        };
+        let message = &message;
         if let Some(limiter) = limiter.as_mut() {
             wait_for_slot(&producer, limiter);
         }
@@ -227,8 +293,14 @@ pub fn produce_messages(
         tally.note_error(&error.to_string());
     }
     tally.collect(&receiver);
-    let total = u64::try_from(messages.len()).unwrap_or(u64::MAX);
-    Ok(tally.into_report(options.topic.clone(), total))
+    let report = tally.into_report(options.topic.clone(), total);
+    match stream_error {
+        Some(error) => Err(error.with_context(&format!(
+            "{} messages were acknowledged before the error",
+            report.sent
+        ))),
+        None => Ok(report),
+    }
 }
 
 /// Turns inputs into messages for one run, holding the sequence state for it.
@@ -510,6 +582,7 @@ fn build_producer_config(
     config.set("enable.idempotence", "true");
     config.set("acks", "all");
     config.set("queue.buffering.max.messages", QUEUE_BUFFERING_MAX_MESSAGES);
+    config.set("queue.buffering.max.kbytes", QUEUE_BUFFERING_MAX_KBYTES);
     config.set(
         "message.timeout.ms",
         message_timeout_millis(timeout).to_string(),
@@ -820,6 +893,102 @@ mod tests {
         assert_eq!(messages[0].partition, Some(2));
         assert_eq!(messages[1].partition, Some(5));
         Ok(())
+    }
+
+    struct FailingOnCallEncoder {
+        fail_on: usize,
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl ValueEncoder for FailingOnCallEncoder {
+        fn encode_value(
+            &self,
+            value: &Value,
+        ) -> CoreResult<crate::codec::value_codec::EncodedValue> {
+            let call = self.calls.get() + 1;
+            self.calls.set(call);
+            if call == self.fail_on {
+                return Err(CoreError::InvalidInput(format!(
+                    "encode failed on call {call}"
+                )));
+            }
+            RawJsonCodec.encode_value(value)
+        }
+    }
+
+    #[test]
+    fn stream_yields_same_messages_as_prepare() -> CoreResult<()> {
+        let inputs = vec![
+            payload(json!({"seq": "{{seq}}"}), 1),
+            payload(json!({"n": 2}), 2),
+        ];
+        let produce_options = options(3);
+
+        let streamed = stream_messages(
+            &inputs,
+            &produce_options,
+            &RawJsonCodec,
+            &ProcessEnvironment,
+            OffsetDateTime::UNIX_EPOCH,
+        )?
+        .collect::<CoreResult<Vec<_>>>()?;
+
+        assert_eq!(streamed, prepare(&inputs, &produce_options)?);
+        assert_eq!(streamed.len(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn stream_rejects_more_than_maximum_messages() {
+        let inputs = vec![payload(json!({}), 1)];
+        let produce_options = options(10_000_001);
+
+        let message = match stream_messages(
+            &inputs,
+            &produce_options,
+            &RawJsonCodec,
+            &ProcessEnvironment,
+            OffsetDateTime::UNIX_EPOCH,
+        ) {
+            Err(error) => error.to_string(),
+            Ok(_) => "no error".to_owned(),
+        };
+
+        assert_eq!(
+            message,
+            "invalid input: too many messages: 10000001 (limit 10000000)"
+        );
+    }
+
+    #[test]
+    fn stream_stops_after_first_error() -> CoreResult<()> {
+        let inputs = vec![payload(json!({"n": 1}), 1)];
+        let produce_options = options(10);
+        let encoder = FailingOnCallEncoder {
+            fail_on: 4,
+            calls: std::cell::Cell::new(0),
+        };
+
+        let items: Vec<CoreResult<PreparedMessage>> = stream_messages(
+            &inputs,
+            &produce_options,
+            &encoder,
+            &ProcessEnvironment,
+            OffsetDateTime::UNIX_EPOCH,
+        )?
+        .collect();
+
+        assert_eq!(items.len(), 4);
+        assert!(items[..3].iter().all(Result::is_ok));
+        assert!(items[3].is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn producer_config_bounds_local_queue() {
+        let config = build_producer_config(&ClientConfig::new(), false, Duration::from_secs(5));
+
+        assert_eq!(config.get("queue.buffering.max.kbytes"), Some("65536"));
     }
 
     #[test]

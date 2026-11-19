@@ -721,7 +721,7 @@ fn consume_deeply_nested_avro_does_not_crash() {
         &EnvironmentSecretResolver::from_process_environment(),
         &ConnectionSettings { insecure: false },
         &options,
-        vec![message],
+        &mut std::iter::once(Ok(message)),
     )
     .unwrap();
     assert_eq!(report.failed, 0);

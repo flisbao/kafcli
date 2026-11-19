@@ -136,8 +136,51 @@ fn produce_three_messages(topic: &str) -> CoreResult<ProduceReport> {
         &FixedSecretResolver::returning("unused"),
         &ConnectionSettings { insecure: false },
         &options,
-        messages,
+        &mut messages.into_iter().map(Ok),
     )
+}
+
+#[test]
+#[ignore = "requires docker compose fixtures"]
+fn stream_error_after_first_messages_reports_acknowledged_count() {
+    let topic = unique_name("kafcli-produce-stream-error");
+    let _guard = TopicGuard::create(&topic);
+    let options = produce_options(&topic);
+    let messages = prepare_messages(
+        &read_produce_inputs(
+            &InputSource::Value(r#"{"id":1}"#.to_string()),
+            InputMode::Json,
+            &mut Cursor::new(Vec::new()),
+        )
+        .unwrap(),
+        &options,
+        &RawJsonCodec,
+        &ProcessEnvironment,
+        OffsetDateTime::UNIX_EPOCH,
+    )
+    .unwrap();
+    let mut stream =
+        messages
+            .into_iter()
+            .map(Ok)
+            .chain(std::iter::once(Err(CoreError::InvalidInput(
+                "encode failed".to_owned(),
+            ))));
+
+    let error = produce_messages(
+        &plaintext_context(),
+        &FixedSecretResolver::returning("unused"),
+        &ConnectionSettings { insecure: false },
+        &options,
+        &mut stream,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, CoreError::InvalidInput(_)));
+    assert_eq!(
+        error.to_string(),
+        "invalid input: encode failed; 1 messages were acknowledged before the error"
+    );
 }
 
 #[test]
@@ -243,7 +286,7 @@ fn produce_prepared(topic: &str, messages: Vec<PreparedMessage>) -> CoreResult<P
         &FixedSecretResolver::returning("unused"),
         &ConnectionSettings { insecure: false },
         &produce_options(topic),
-        messages,
+        &mut messages.into_iter().map(Ok),
     )
 }
 

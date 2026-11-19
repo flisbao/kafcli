@@ -20,7 +20,7 @@ use kafcli_core::guard::guard_enforcer::enforce_guard;
 use kafcli_core::guard::guard_request::GuardRequest;
 use kafcli_core::guard::operation_level::OperationLevel;
 use kafcli_core::ops::produce::message_producer::{
-    ProduceOptions, prepare_messages, produce_messages,
+    ProduceOptions, prepare_messages, produce_messages, stream_messages,
 };
 use kafcli_core::ops::produce::produce_input::{
     InputMode, InputSource, ProduceInput, read_produce_inputs,
@@ -75,15 +75,11 @@ pub fn produce(
         bail!("no messages to produce");
     }
     let options = build_options(arguments);
-    let messages = prepare_messages(
-        &inputs,
-        &options,
-        selected_encoder.encoder.as_ref(),
-        &ProcessEnvironment,
-        OffsetDateTime::now_utc(),
-    )?;
+    let now = OffsetDateTime::now_utc();
+    let encoder = selected_encoder.encoder.as_ref();
 
     if arguments.dry_run {
+        let messages = prepare_messages(&inputs, &options, encoder, &ProcessEnvironment, now)?;
         write_audit_record(&context_name, &target, AuditOutcome::DryRun, None);
         let view = DryRunView::from_messages(&messages, selected_encoder.schema_id.clone());
         return Ok(RenderedOutput::complete(render_output(
@@ -92,12 +88,23 @@ pub fn produce(
         )?));
     }
 
+    // Template and encoding errors of every input show up here, before anything is sent. The full
+    // run is then prepared one message at a time, so memory does not grow with --count.
+    let first_round = ProduceOptions {
+        count: 1,
+        ..options.clone()
+    };
+    prepare_messages(&inputs, &first_round, encoder, &ProcessEnvironment, now)?;
+    let mut messages = stream_messages(&inputs, &options, encoder, &ProcessEnvironment, now)?;
+    let message_count = options
+        .count
+        .saturating_mul(u64::try_from(inputs.len()).unwrap_or(u64::MAX));
+
     let request = GuardRequest {
         level: OperationLevel::Write,
         description: format!(
             "produce {} messages to topic {}",
-            messages.len(),
-            arguments.topic
+            message_count, arguments.topic
         ),
         confirmation_target: arguments.topic.clone(),
         assume_yes: arguments.yes,
@@ -115,14 +122,19 @@ pub fn produce(
     let settings = ConnectionSettings {
         insecure: execution.global.insecure,
     };
-    let report =
-        match produce_messages(&connection_context, resolver, &settings, &options, messages) {
-            Ok(report) => report,
-            Err(error) => {
-                write_audit_record(&context_name, &target, AuditOutcome::Failed, None);
-                return Err(error.into());
-            }
-        };
+    let report = match produce_messages(
+        &connection_context,
+        resolver,
+        &settings,
+        &options,
+        &mut messages,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            write_audit_record(&context_name, &target, AuditOutcome::Failed, None);
+            return Err(error.into());
+        }
+    };
 
     let failed = report.failed;
     let outcome = if failed > 0 {

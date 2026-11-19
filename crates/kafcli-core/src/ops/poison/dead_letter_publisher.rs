@@ -56,7 +56,7 @@ impl DeadLetterPublisher for KafkaDeadLetterPublisher<'_> {
             self.resolver,
             &self.settings,
             &options,
-            vec![message],
+            &mut std::iter::once(Ok(message)),
         )?;
         match report.deliveries.into_iter().next() {
             Some(delivery) if report.sent == 1 => Ok(delivery),
