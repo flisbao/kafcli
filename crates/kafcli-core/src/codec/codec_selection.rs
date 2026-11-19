@@ -486,7 +486,7 @@ mod tests {
         r#"{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}}"#;
     const AZURE_SCHEMA_ID: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
-    fn json_route(path: &str, body: serde_json::Value) -> FakeRoute {
+    fn json_route(path: &str, body: &serde_json::Value) -> FakeRoute {
         FakeRoute {
             method: "GET".into(),
             path_and_query: path.into(),
@@ -499,18 +499,18 @@ mod tests {
     /// Confluent registry: id 7 is Avro, id 9 is JSON Schema; `pedidos-avro` and `pedidos-value` are subjects.
     fn confluent_routes() -> Vec<FakeRoute> {
         vec![
-            json_route("/schemas/ids/7", json!({"schema": PAIR})),
+            json_route("/schemas/ids/7", &json!({"schema": PAIR})),
             json_route(
                 "/schemas/ids/9",
-                json!({"schema": OBJECT, "schemaType": "JSON"}),
+                &json!({"schema": OBJECT, "schemaType": "JSON"}),
             ),
             json_route(
                 "/subjects/pedidos-avro/versions/latest",
-                json!({"subject": "pedidos-avro", "id": 7, "version": 1, "schema": PAIR}),
+                &json!({"subject": "pedidos-avro", "id": 7, "version": 1, "schema": PAIR}),
             ),
             json_route(
                 "/subjects/pedidos-value/versions/latest",
-                json!({"subject": "pedidos-value", "id": 9, "version": 2, "schema": OBJECT, "schemaType": "JSON"}),
+                &json!({"subject": "pedidos-value", "id": 9, "version": 2, "schema": OBJECT, "schemaType": "JSON"}),
             ),
         ]
     }

@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! Bearer (OAUTHBEARER) authentication against the `kafka-oauth` fixture of
 //! `tests/fixtures/compose.yaml`. The fixture accepts unsecured JWTs (`alg: none`).
@@ -102,7 +107,7 @@ fn base64_url(bytes: &[u8]) -> String {
         let third = chunk.get(2).copied().unwrap_or(0);
         let group = (u32::from(first) << 16) | (u32::from(second) << 8) | u32::from(third);
         for index in 0..=chunk.len() {
-            let shift = 18 - 6 * index as u32;
+            let shift = 18 - 6 * u32::try_from(index).unwrap();
             encoded.push(char::from(ALPHABET[((group >> shift) & 0x3f) as usize]));
         }
     }

@@ -33,7 +33,7 @@ impl KafkaConnection {
     /// Creates a consumer from `config` and waits for its first token when there is a token source.
     pub fn create_consumer(
         &self,
-        config: ClientConfig,
+        config: &ClientConfig,
     ) -> CoreResult<BaseConsumer<KafkaClientContext>> {
         let refresher = self.refresher.for_new_client();
         let consumer: BaseConsumer<KafkaClientContext> = config
@@ -93,6 +93,10 @@ pub fn build_kafka_connection(
     })
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_kafka_error(error: KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }

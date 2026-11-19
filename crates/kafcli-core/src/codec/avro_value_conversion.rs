@@ -71,6 +71,10 @@ pub(super) fn json_to_avro(
         }
         Schema::Float => {
             let number = json_float(json, pointer, "float")?;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "narrowing is the Avro float conversion; overflow is checked next"
+            )]
             let narrowed = number as f32;
             if narrowed.is_infinite() && number.is_finite() {
                 return Err(mismatch(pointer, "number out of range for float"));

@@ -18,6 +18,13 @@ expect_used = "deny"
 mem_forget = "deny"
 panic = "deny"
 todo = "deny"
+allow_attributes_without_reason = "deny"
+needless_pass_by_value = "deny"
+redundant_clone = "deny"
+significant_drop_tightening = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
 
 [workspace.dependencies]
 kafcli-core = { path = "crates/kafcli-core" }

@@ -112,6 +112,10 @@ impl Drop for FakeRegistryServer {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the server thread owns its listener until it stops"
+)]
 fn serve(
     listener: TcpListener,
     routes: &[FakeRoute],

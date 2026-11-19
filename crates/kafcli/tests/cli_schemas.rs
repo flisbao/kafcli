@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! Schema flags of `produce` and `consume` without a broker. The contexts point at a closed port and
 //! the schema registry is a `FakeRegistryServer` on localhost.
@@ -839,7 +844,7 @@ fn help_lists_examples() {
 
 /// Writes a configuration by hand with a protected context whose registry is `registry_url`.
 /// `context add` would refuse these settings, so the file is the only way to reach the registry rules.
-fn write_protected_registry_config(directory: &Path, registry_url: &str, registry_auth: Value) {
+fn write_protected_registry_config(directory: &Path, registry_url: &str, registry_auth: &Value) {
     let config = json!({
         "current_context": "prd",
         "contexts": {
@@ -869,7 +874,7 @@ fn schema_get_refuses_http_registry_on_protected_context() {
     write_protected_registry_config(
         directory.path(),
         &registry.url(),
-        json!({"type": "basic", "username": "app", "secret_ref": "env:SR_PASSWORD"}),
+        &json!({"type": "basic", "username": "app", "secret_ref": "env:SR_PASSWORD"}),
     );
 
     build_kafcli_command(directory.path())
@@ -886,7 +891,7 @@ fn schema_get_refuses_anonymous_registry_on_protected_https() {
     // The fake speaks plain HTTP, so any request that reached it would be recorded even if it failed.
     let registry = FakeRegistryServer::start(vec![]).unwrap();
     let https_url = registry.url().replacen("http://", "https://", 1);
-    write_protected_registry_config(directory.path(), &https_url, json!({"type": "none"}));
+    write_protected_registry_config(directory.path(), &https_url, &json!({"type": "none"}));
 
     build_kafcli_command(directory.path())
         .args(["schema", "get", "--subject", SUBJECT])
@@ -903,7 +908,7 @@ fn produce_dry_run_refuses_http_registry_on_protected_context() {
     write_protected_registry_config(
         directory.path(),
         &registry.url(),
-        json!({"type": "basic", "username": "app", "secret_ref": "env:SR_PASSWORD"}),
+        &json!({"type": "basic", "username": "app", "secret_ref": "env:SR_PASSWORD"}),
     );
 
     build_kafcli_command(directory.path())
@@ -922,7 +927,7 @@ fn produce_dry_run_refuses_anonymous_registry_on_protected_https() {
     let directory = tempfile::tempdir().unwrap();
     let registry = FakeRegistryServer::start(vec![]).unwrap();
     let https_url = registry.url().replacen("http://", "https://", 1);
-    write_protected_registry_config(directory.path(), &https_url, json!({"type": "none"}));
+    write_protected_registry_config(directory.path(), &https_url, &json!({"type": "none"}));
 
     build_kafcli_command(directory.path())
         .args(["produce", "--topic", "pedidos"])

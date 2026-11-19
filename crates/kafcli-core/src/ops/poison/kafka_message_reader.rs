@@ -46,7 +46,7 @@ impl PartitionMessageReader for KafkaPartitionMessageReader {
         // An offset outside the log is an error, never a silent jump to another message.
         config.set("auto.offset.reset", "error");
         limit_prefetch(&mut config);
-        let consumer = self.connection.create_consumer(config)?;
+        let consumer = self.connection.create_consumer(&config)?;
         let mut assignment = TopicPartitionList::new();
         for (partition, start) in start_offsets {
             assignment
@@ -118,6 +118,10 @@ fn fetched_record(message: &BorrowedMessage<'_>) -> FetchedRecord {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_read_error(error: rdkafka::error::KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }

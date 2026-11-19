@@ -457,7 +457,7 @@ fn create_assign_consumer(
     // Assignment never commits: the group id exists only because librdkafka requires one.
     config.set("enable.auto.commit", "false");
     config.set("enable.auto.offset.store", "false");
-    create_consume_consumer(connection, config)
+    create_consume_consumer(connection, &config)
 }
 
 fn create_subscribe_consumer(
@@ -466,13 +466,13 @@ fn create_subscribe_consumer(
     start: StartPosition,
 ) -> CoreResult<ConsumeConsumer> {
     let config = build_subscribe_config(connection.client_config().clone(), group_id, start);
-    create_consume_consumer(connection, config)
+    create_consume_consumer(connection, &config)
 }
 
 /// Creates a consumer in `config` and waits for its first token when there is a token source.
 fn create_consume_consumer(
     connection: &KafkaConnection,
-    config: ClientConfig,
+    config: &ClientConfig,
 ) -> CoreResult<ConsumeConsumer> {
     let refresher = connection.refresher().for_new_client();
     let consumer: ConsumeConsumer = config
@@ -583,6 +583,10 @@ fn to_unix_millis(instant: SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_kafka_error(error: KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }

@@ -100,9 +100,9 @@ mod tests {
         AvroSchema::parse(text).expect("test schema must parse")
     }
 
-    fn encode_error(schema: &AvroSchema, value: Value) -> String {
+    fn encode_error(schema: &AvroSchema, value: &Value) -> String {
         schema
-            .encode_json(&value)
+            .encode_json(value)
             .expect_err("value must be rejected")
             .to_string()
     }
@@ -199,7 +199,7 @@ mod tests {
                 {"name":"u","type":["null","int"]}]}"#,
         );
 
-        let error = encode_error(&record, json!({"u": "text"}));
+        let error = encode_error(&record, &json!({"u": "text"}));
 
         assert_eq!(
             error,
@@ -211,7 +211,7 @@ mod tests {
     fn unknown_field_is_rejected_with_name() {
         let pair = schema(PAIR);
 
-        let error = encode_error(&pair, json!({"a": 1, "b": "x", "extra": 2}));
+        let error = encode_error(&pair, &json!({"a": 1, "b": "x", "extra": 2}));
 
         assert_eq!(
             error,
@@ -223,7 +223,7 @@ mod tests {
     fn missing_field_without_default_is_rejected() {
         let pair = schema(PAIR);
 
-        let error = encode_error(&pair, json!({"a": 1}));
+        let error = encode_error(&pair, &json!({"a": 1}));
 
         assert_eq!(
             error,
@@ -238,7 +238,7 @@ mod tests {
                 {"name":"c","type":{"type":"enum","name":"Color","symbols":["RED"]}}]}"#,
         );
 
-        let error = encode_error(&record, json!({"c": "BLUE"}));
+        let error = encode_error(&record, &json!({"c": "BLUE"}));
 
         assert_eq!(
             error,
@@ -261,7 +261,7 @@ mod tests {
     fn bytes_above_code_point_ff_are_rejected() {
         let raw = schema(r#"{"type":"bytes"}"#);
 
-        let error = encode_error(&raw, json!("Ā"));
+        let error = encode_error(&raw, &json!("Ā"));
 
         assert_eq!(
             error,
@@ -276,7 +276,7 @@ mod tests {
                 {"name":"id","type":{"type":"fixed","name":"Id","size":2}}]}"#,
         );
 
-        let error = encode_error(&record, json!({"id": "abc"}));
+        let error = encode_error(&record, &json!({"id": "abc"}));
 
         assert_eq!(
             error,
@@ -292,19 +292,19 @@ mod tests {
         );
 
         assert_eq!(
-            encode_error(&record, json!({"i": 2147483648_i64, "l": 1})),
+            encode_error(&record, &json!({"i": 2147483648_i64, "l": 1})),
             "value does not match schema at '/i': integer out of range for int"
         );
         assert_eq!(
-            encode_error(&record, json!({"i": 1.5, "l": 1})),
+            encode_error(&record, &json!({"i": 1.5, "l": 1})),
             "value does not match schema at '/i': expected int"
         );
         assert_eq!(
-            encode_error(&record, json!({"i": 1, "l": u64::MAX})),
+            encode_error(&record, &json!({"i": 1, "l": u64::MAX})),
             "value does not match schema at '/l': integer out of range for long"
         );
         assert_eq!(
-            encode_error(&record, json!({"i": 1, "l": 2.5})),
+            encode_error(&record, &json!({"i": 1, "l": 2.5})),
             "value does not match schema at '/l': expected long"
         );
     }
@@ -317,7 +317,7 @@ mod tests {
                     "fields":[{"name":"price","type":"int"}]}}}]}"#,
         );
 
-        let error = encode_error(&order, json!({"items": [{"price": 1}, {"price": "caro"}]}));
+        let error = encode_error(&order, &json!({"items": [{"price": 1}, {"price": "caro"}]}));
 
         assert_eq!(
             error,
@@ -330,7 +330,7 @@ mod tests {
         let record =
             schema(r#"{"type":"record","name":"R","fields":[{"name":"cpf","type":"int"}]}"#);
 
-        let error = encode_error(&record, json!({"cpf": "segredo-cpf-123"}));
+        let error = encode_error(&record, &json!({"cpf": "segredo-cpf-123"}));
 
         assert!(
             !error.contains("segredo-cpf-123"),
@@ -380,7 +380,7 @@ mod tests {
             value = json!({"next": value});
         }
 
-        let error = encode_error(&node, value);
+        let error = encode_error(&node, &value);
 
         assert!(
             error.ends_with(": value nests deeper than 64 levels"),

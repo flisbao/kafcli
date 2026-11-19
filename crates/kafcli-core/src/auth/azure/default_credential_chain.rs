@@ -250,7 +250,7 @@ impl DefaultCredentialChain {
     pub(crate) fn new(
         config: &AzureDefaultConfig,
         scope: &str,
-        environment: Arc<dyn AzureEnvironment>,
+        environment: &Arc<dyn AzureEnvironment>,
         authority_host: Option<&str>,
         imds_base_url: String,
         azure_cli: AzureCliTokenSource,
@@ -266,7 +266,7 @@ impl DefaultCredentialChain {
             ),
             (
                 "managed identity",
-                managed_identity_link(config, scope, Arc::clone(&environment), imds_base_url),
+                managed_identity_link(config, scope, Arc::clone(environment), imds_base_url),
             ),
             ("azure cli", Box::new(azure_cli)),
         ];
@@ -278,6 +278,10 @@ impl DefaultCredentialChain {
 }
 
 impl TokenSource for DefaultCredentialChain {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held while fetching, so concurrent callers do not run the chain twice"
+    )]
     fn fetch_access_token(&self) -> CoreResult<AccessToken> {
         let mut chosen = lock_chosen(&self.chosen);
         if let Some((_, link)) = (*chosen).and_then(|index| self.links.get(index)) {
@@ -358,7 +362,7 @@ mod tests {
 
     fn build_chain(
         variables: &[(&str, &str)],
-        authority_host: Option<String>,
+        authority_host: Option<&str>,
         imds_base_url: String,
     ) -> DefaultCredentialChain {
         DefaultCredentialChain::new(
@@ -368,8 +372,8 @@ mod tests {
                 scope: None,
             },
             SCOPE,
-            Arc::new(FakeAzureEnvironment::new(variables)),
-            authority_host.as_deref(),
+            &(Arc::new(FakeAzureEnvironment::new(variables)) as Arc<dyn AzureEnvironment>),
+            authority_host,
             imds_base_url,
             missing_az(),
         )
@@ -392,7 +396,7 @@ mod tests {
         )])
         .unwrap();
         let imds = FakeRegistryServer::start(Vec::new()).unwrap();
-        let chain = build_chain(&secret_variables(), Some(entra.url()), imds.url());
+        let chain = build_chain(&secret_variables(), Some(&entra.url()), imds.url());
 
         let token = chain.fetch_access_token().unwrap();
 
@@ -418,7 +422,7 @@ mod tests {
                 ("AZURE_CLIENT_ID", "app"),
                 ("AZURE_FEDERATED_TOKEN_FILE", &token_path),
             ],
-            Some(entra.url()),
+            Some(&entra.url()),
             closed_port_url(),
         );
 
@@ -473,7 +477,7 @@ mod tests {
         );
         let entra = FakeRegistryServer::start_with_generated(Vec::new(), vec![route]).unwrap();
         let imds = FakeRegistryServer::start(Vec::new()).unwrap();
-        let chain = build_chain(&secret_variables(), Some(entra.url()), imds.url());
+        let chain = build_chain(&secret_variables(), Some(&entra.url()), imds.url());
 
         chain.fetch_access_token().unwrap();
         let error = chain.fetch_access_token().unwrap_err();
@@ -494,7 +498,7 @@ mod tests {
         )])
         .unwrap();
         let imds = FakeRegistryServer::start(Vec::new()).unwrap();
-        let chain = build_chain(&secret_variables(), Some(entra.url()), imds.url());
+        let chain = build_chain(&secret_variables(), Some(&entra.url()), imds.url());
 
         let error = chain.fetch_access_token().unwrap_err();
 
@@ -557,7 +561,7 @@ mod tests {
     // The server must hold the connection without answering, which needs a sleep. The repo's
     // clippy.toml allows sleep only in tests, with a local allow (see ADR 0004).
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::disallowed_methods, reason = "test-only sleep (ADR 0004)")]
     fn imds_without_answer_is_unavailable_after_probe_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();

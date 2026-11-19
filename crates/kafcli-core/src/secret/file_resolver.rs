@@ -110,7 +110,7 @@ mod tests {
     }
     #[test]
     fn rejects_file_larger_than_limit() {
-        let contents = vec![b'a'; (MAXIMUM_SECRET_FILE_BYTES + 1) as usize];
+        let contents = vec![b'a'; usize::try_from(MAXIMUM_SECRET_FILE_BYTES + 1).unwrap()];
         let (_file, reference) = reference_to_file_with_contents(&contents);
         assert!(FileSecretResolver.resolve_secret(&reference).is_err());
     }

@@ -43,6 +43,10 @@ impl CachedTokenSource {
 }
 
 impl TokenSource for CachedTokenSource {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held while fetching, so concurrent callers share one fetch"
+    )]
     fn fetch_access_token(&self) -> CoreResult<AccessToken> {
         let mut cached = lock_cache(&self.cached);
         let now = self.clock.now();

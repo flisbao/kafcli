@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! No OAuth or Azure secret reaches stdout, stderr or the audit log. Each marker is a literal
 //! string that a leak would print: the client secret, the Entra access token (its signature

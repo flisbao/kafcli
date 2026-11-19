@@ -294,7 +294,11 @@ mod tests {
 
     /// Answers each connection with a token. The connections after the first wait `later_delay`,
     /// which is longer than the probe timeout used in the test. The sleep is test-only (ADR 0004).
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::disallowed_methods, reason = "test-only sleep (ADR 0004)")]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the server thread owns its listener"
+    )]
     fn serve_tokens(listener: TcpListener, later_delay: Duration) {
         for (index, stream) in listener.incoming().flatten().enumerate() {
             let mut reader = BufReader::new(stream);
@@ -320,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::disallowed_methods, reason = "test-only sleep (ADR 0004)")]
     fn probe_timeout_applies_only_until_the_first_token() {
         // The probe timeout is 1 s. The second answer comes after 1.5 s, so the second fetch only
         // succeeds when the full request timeout is used.

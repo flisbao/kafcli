@@ -269,6 +269,7 @@ impl RegistryHttpClient {
         while tokens.len() > MAX_REMEMBERED_TOKENS {
             tokens.pop_front();
         }
+        drop(tokens);
     }
 
     /// Names the kind of transport failure and appends its cause chain, without any URL or secret.

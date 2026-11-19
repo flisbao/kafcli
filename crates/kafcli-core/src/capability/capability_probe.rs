@@ -156,7 +156,7 @@ pub fn probe_capabilities(
         context_name: context_name.to_string(),
         run_identifier: run_identifier.clone(),
         topic: options.topic.clone(),
-        probe_group: session.probe_group.clone(),
+        probe_group: session.probe_group,
         broker_count: metadata.broker_count,
         checks,
     })
@@ -229,7 +229,7 @@ impl ProbeSession<'_> {
     fn fetch_topic_metadata(&self) -> CoreResult<TopicMetadataSummary> {
         let consumer = self
             .connection
-            .create_consumer(self.build_consumer_config(None))?;
+            .create_consumer(&self.build_consumer_config(None))?;
         let metadata = consumer
             .fetch_metadata(Some(self.topic), self.timeout)
             .map_err(map_kafka_error)?;
@@ -332,7 +332,7 @@ impl ProbeSession<'_> {
         // assigns here and never commits, so no offset is written for it.
         let consumer = create_probe_consumer(
             &self.connection,
-            self.build_consumer_config(Some(self.probe_group.as_str())),
+            &self.build_consumer_config(Some(self.probe_group.as_str())),
         )?;
         consumer.assign(&build_partition_list(self.topic, first_offset)?)?;
 
@@ -365,7 +365,7 @@ impl ProbeSession<'_> {
     }
 
     fn check_list_offsets(&self) -> KafkaResult<CapabilityOutcome> {
-        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
+        let consumer = create_probe_consumer(&self.connection, &self.build_consumer_config(None))?;
         let (low, high) = consumer.fetch_watermarks(self.topic, PROBE_PARTITION, self.timeout)?;
         Ok(CapabilityOutcome::Supported {
             detail: Some(format!("low={low} high={high}")),
@@ -379,7 +379,7 @@ impl ProbeSession<'_> {
         let Some(batch) = batch else {
             return Ok(build_missing_batch_outcome());
         };
-        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
+        let consumer = create_probe_consumer(&self.connection, &self.build_consumer_config(None))?;
         let lookup_millis = batch.send_timestamp_millis - TIMESTAMP_LOOKUP_SKEW_MILLIS;
         let mut query = TopicPartitionList::new();
         query.add_partition_offset(self.topic, PROBE_PARTITION, Offset::Offset(lookup_millis))?;
@@ -433,7 +433,7 @@ impl ProbeSession<'_> {
         };
         let consumer = create_probe_consumer(
             &self.connection,
-            self.build_consumer_config(Some(self.probe_group.as_str())),
+            &self.build_consumer_config(Some(self.probe_group.as_str())),
         )?;
         let committed = consumer.committed_offsets(
             build_partition_list(self.topic, first_offset)?,
@@ -454,7 +454,7 @@ impl ProbeSession<'_> {
     }
 
     fn check_list_groups(&self) -> KafkaResult<CapabilityOutcome> {
-        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
+        let consumer = create_probe_consumer(&self.connection, &self.build_consumer_config(None))?;
         let groups = consumer.fetch_group_list(None, self.timeout)?;
         let listed = groups
             .groups()
@@ -467,7 +467,7 @@ impl ProbeSession<'_> {
     }
 
     fn check_describe_group(&self) -> KafkaResult<CapabilityOutcome> {
-        let consumer = create_probe_consumer(&self.connection, self.build_consumer_config(None))?;
+        let consumer = create_probe_consumer(&self.connection, &self.build_consumer_config(None))?;
         let groups = consumer.fetch_group_list(Some(self.probe_group.as_str()), self.timeout)?;
         let outcome = match groups
             .groups()
@@ -495,7 +495,7 @@ impl ProbeSession<'_> {
         let active_group = format!("{}{ACTIVE_GROUP_SUFFIX}", self.probe_group);
         let member = create_probe_consumer(
             &self.connection,
-            self.build_consumer_config(Some(active_group.as_str())),
+            &self.build_consumer_config(Some(active_group.as_str())),
         )?;
         member.subscribe(&[self.topic])?;
         if !self.wait_for_assignment(&member)? {
@@ -534,7 +534,7 @@ impl ProbeSession<'_> {
         thread::spawn(move || {
             let outcome = commit_offset_in_group(
                 &connection,
-                config,
+                &config,
                 &topic,
                 assigned_offset,
                 committed_offset,
@@ -572,7 +572,7 @@ impl ProbeSession<'_> {
 /// Creates a consumer in `config`, assigns `assigned_offset` and commits `committed_offset` synchronously.
 fn commit_offset_in_group(
     connection: &KafkaConnection,
-    config: ClientConfig,
+    config: &ClientConfig,
     topic: &str,
     assigned_offset: i64,
     committed_offset: i64,
@@ -589,7 +589,7 @@ fn commit_offset_in_group(
 /// `KafkaError` type is kept so that error codes still classify the check.
 fn create_probe_consumer(
     connection: &KafkaConnection,
-    config: ClientConfig,
+    config: &ClientConfig,
 ) -> KafkaResult<BaseConsumer<KafkaClientContext>> {
     let refresher = connection.refresher().for_new_client();
     let consumer: BaseConsumer<KafkaClientContext> =
@@ -602,6 +602,10 @@ fn create_probe_consumer(
     Ok(consumer)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn to_client_creation_error(error: CoreError) -> KafkaError {
     KafkaError::ClientCreation(error.to_string())
 }
@@ -656,6 +660,10 @@ fn measure_elapsed_millis(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_kafka_error(error: KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }

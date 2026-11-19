@@ -44,7 +44,7 @@ impl KafkaClusterReader {
         timeout: Duration,
     ) -> CoreResult<Self> {
         let connection = build_kafka_connection(context, resolver, settings)?;
-        let metadata_consumer = connection.create_consumer(build_read_only_config(&connection))?;
+        let metadata_consumer = connection.create_consumer(&build_read_only_config(&connection))?;
         Ok(Self {
             connection,
             metadata_consumer,
@@ -158,7 +158,7 @@ impl ClusterOffsetsReader for KafkaClusterReader {
         let mut config = build_read_only_config(&self.connection);
         // The group id only selects whose offsets OffsetFetch returns; the consumer never joins.
         config.set("group.id", group);
-        let consumer = self.connection.create_consumer(config)?;
+        let consumer = self.connection.create_consumer(&config)?;
         let committed = consumer
             .committed_offsets(list, self.timeout)
             .map_err(|error| self.map_error(BrokerOperation::OffsetFetch, Some(group), &error))?;

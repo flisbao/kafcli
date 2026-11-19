@@ -146,7 +146,7 @@ pub fn create_azure_token_source(
             let chain = DefaultCredentialChain::new(
                 config,
                 scope,
-                environment,
+                &environment,
                 None,
                 DEFAULT_IMDS_BASE_URL.to_owned(),
                 AzureCliTokenSource::new(config.tenant_id.clone(), scope.to_owned()),

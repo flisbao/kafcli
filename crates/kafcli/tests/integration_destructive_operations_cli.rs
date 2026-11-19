@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! Destructive operations (`offsets set`, `offsets restore`, `poison skip`) through the real
 //! binary, checked with the Kafka tools of the `kafka-plaintext` broker of
@@ -236,7 +241,7 @@ fn group_has_members(group: &str) -> bool {
 
 /// Polls the Kafka tool until `group` lists a member. The background consumer gives no signal to
 /// wait on, so this test helper sleeps between polls.
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods, reason = "test-only sleep (ADR 0004)")]
 fn wait_for_member(group: &str) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {

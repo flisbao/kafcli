@@ -373,7 +373,12 @@ fn neutralize_messages(messages: &[MessageDump]) -> Vec<MessageDump> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 mod tests {
     use super::*;
     use kafcli_core::capability::capability_report::CapabilityName;

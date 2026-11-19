@@ -31,6 +31,10 @@ pub fn describe_figment_error(error: &figment::Error) -> String {
         .join("; ")
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn describe_single_error(error: figment::Error) -> String {
     let location = error.path.join(".");
     let description = describe_kind(&error.kind);

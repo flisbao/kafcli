@@ -44,7 +44,13 @@ fn read_expiry(object: &Map<String, Value>) -> Option<SystemTime> {
         .get("exp")
         .and_then(Value::as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)?;
-    UNIX_EPOCH.checked_add(Duration::from_secs(seconds.trunc() as u64))
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite and non-negative was checked above; `as` saturates above u64::MAX"
+    )]
+    let whole_seconds = seconds.trunc() as u64;
+    UNIX_EPOCH.checked_add(Duration::from_secs(whole_seconds))
 }
 
 fn read_string_claim(object: &Map<String, Value>, name: &str) -> Option<String> {

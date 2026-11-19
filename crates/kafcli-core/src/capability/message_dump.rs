@@ -113,7 +113,7 @@ fn create_dump_consumer(
     config.set("enable.auto.commit", "false");
     // librdkafka rejects `assign` without a group id; the group is never committed to.
     config.set("group.id", group_id);
-    connection.create_consumer(config)
+    connection.create_consumer(&config)
 }
 
 pub(crate) fn fetch_partition_identifiers<C: ConsumerContext>(
@@ -168,6 +168,10 @@ fn to_unix_millis(instant: SystemTime) -> i64 {
         .unwrap_or(0)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_kafka_error(error: rdkafka::error::KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }

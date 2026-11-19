@@ -31,7 +31,7 @@ pub fn probe_context_connection(
     timeout: Duration,
 ) -> CoreResult<ConnectionReport> {
     let connection = build_kafka_connection(context, resolver, settings)?;
-    let consumer = connection.create_consumer(connection.client_config().clone())?;
+    let consumer = connection.create_consumer(&connection.client_config().clone())?;
     let metadata = consumer
         .fetch_metadata(None, timeout)
         .map_err(map_kafka_error)?;
@@ -70,6 +70,10 @@ fn assemble_connection_report(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_kafka_error(error: rdkafka::error::KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }
@@ -151,7 +155,7 @@ mod tests {
         .unwrap();
         // The consumer's first poll asks for a token; the connection then reports its principal.
         connection
-            .create_consumer(connection.client_config().clone())
+            .create_consumer(&connection.client_config().clone())
             .unwrap();
 
         let report = assemble_connection_report("dev", &context, &connection, 0, Vec::new());

@@ -108,7 +108,7 @@ impl SchemaCache {
 fn load_schema(id: &SchemaId, registry: &dyn SchemaRegistry) -> (CachedOutcome, bool) {
     match registry.fetch_schema_by_id(id) {
         Ok(schema) => {
-            let outcome = parse_registered_schema(schema)
+            let outcome = parse_registered_schema(&schema)
                 .map(Rc::new)
                 .map_err(|error| describe_failure(id, &error));
             (outcome, false)
@@ -129,7 +129,7 @@ fn describe_failure(id: &SchemaId, error: &CoreError) -> String {
     )
 }
 
-fn parse_registered_schema(schema: RegisteredSchema) -> CoreResult<ParsedSchema> {
+fn parse_registered_schema(schema: &RegisteredSchema) -> CoreResult<ParsedSchema> {
     match schema.kind {
         SchemaKind::Avro => Ok(ParsedSchema::Avro(AvroSchema::parse(&schema.text)?)),
         SchemaKind::Json => Ok(ParsedSchema::Json),

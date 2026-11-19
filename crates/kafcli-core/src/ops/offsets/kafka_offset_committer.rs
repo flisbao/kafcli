@@ -88,7 +88,7 @@ fn commit_on_worker(
     let mut config = build_read_only_config(connection);
     config.set("group.id", group);
     let consumer = connection
-        .create_consumer(config)
+        .create_consumer(&config)
         .map_err(CommitFailure::Client)?;
     let list = build_commit_list(offsets).map_err(CommitFailure::Broker)?;
     consumer.assign(&list).map_err(CommitFailure::Broker)?;

@@ -58,7 +58,7 @@ impl AzureSchemaRegistry {
     /// Sends a request and returns the answer only when its status is 2xx.
     fn send(
         &self,
-        method: Method,
+        method: &Method,
         path_and_query: &str,
         content_type: Option<&str>,
         body: Option<String>,
@@ -71,7 +71,7 @@ impl AzureSchemaRegistry {
             return Ok(response);
         }
         Err(self.error_for_response(
-            &method,
+            method,
             path_without_query(path_and_query),
             lookup,
             &response,
@@ -162,7 +162,7 @@ impl AzureSchemaRegistry {
             group: &self.group,
             name,
         };
-        let response = self.send(Method::GET, &path, None, None, &lookup)?;
+        let response = self.send(&Method::GET, &path, None, None, &lookup)?;
         let id = self.schema_id_header(&response, &Method::GET, shown)?;
         let kind = self.read_schema_kind(&response)?;
         let subject = self
@@ -193,7 +193,7 @@ impl SchemaRegistry for AzureSchemaRegistry {
         );
         let shown = path_without_query(&path);
         let lookup = Lookup::Id(azure_id.as_str());
-        let response = self.send(Method::GET, &path, None, None, &lookup)?;
+        let response = self.send(&Method::GET, &path, None, None, &lookup)?;
         let kind = self.read_schema_kind(&response)?;
         let subject = self.header_text(&response, "Schema-Name");
         let version = version_header(&response);
@@ -225,7 +225,7 @@ impl SchemaRegistry for AzureSchemaRegistry {
                     group: &self.group,
                     name: subject,
                 };
-                let response = self.send(Method::GET, &path, None, None, &lookup)?;
+                let response = self.send(&Method::GET, &path, None, None, &lookup)?;
                 let list: VersionListBody = serde_json::from_slice(&response.body)
                     .map_err(|_| unexpected_response(&Method::GET, shown))?;
                 let values = list
@@ -265,7 +265,7 @@ impl SchemaRegistry for AzureSchemaRegistry {
             name: subject,
         };
         let response = self.send(
-            Method::PUT,
+            &Method::PUT,
             &path,
             Some(content_type),
             Some(text.to_string()),

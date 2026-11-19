@@ -408,7 +408,7 @@ mod tests {
         commit(&mut reader, 0, 2);
         commit(&mut reader, 1, 2);
         let instant = OffsetDateTime::from_unix_timestamp(1_795_000_000).unwrap();
-        let millis = (instant.unix_timestamp_nanos() / 1_000_000) as i64;
+        let millis = i64::try_from(instant.unix_timestamp_nanos() / 1_000_000).unwrap();
         reader
             .times
             .insert(("t".to_owned(), 0), vec![(millis - 1, 4), (millis, 5)]);

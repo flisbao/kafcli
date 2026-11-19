@@ -119,7 +119,7 @@ impl<'a> ProtocolReader<'a> {
         if count > maximum {
             return Err(self.error(above_maximum));
         }
-        Ok(count as usize)
+        usize::try_from(count).map_err(|_| self.error(above_maximum))
     }
 
     fn read_string(&mut self) -> CoreResult<String> {
@@ -127,7 +127,8 @@ impl<'a> ProtocolReader<'a> {
         if length < 0 {
             return Err(self.error("negative length"));
         }
-        let slice = self.take(length as usize)?;
+        let length = usize::try_from(length).map_err(|_| self.error("negative length"))?;
+        let slice = self.take(length)?;
         std::str::from_utf8(slice)
             .map(str::to_owned)
             .map_err(|_| self.error("topic name is not UTF-8"))
@@ -139,14 +140,14 @@ mod tests {
     use super::*;
 
     fn encode_test_string(text: &str) -> Vec<u8> {
-        let mut bytes = (text.len() as i16).to_be_bytes().to_vec();
+        let mut bytes = i16::try_from(text.len()).unwrap().to_be_bytes().to_vec();
         bytes.extend_from_slice(text.as_bytes());
         bytes
     }
 
     fn encode_subscription_header(version: i16, topics: &[&str]) -> Vec<u8> {
         let mut bytes = version.to_be_bytes().to_vec();
-        bytes.extend_from_slice(&(topics.len() as i32).to_be_bytes());
+        bytes.extend_from_slice(&i32::try_from(topics.len()).unwrap().to_be_bytes());
         for topic in topics {
             bytes.extend(encode_test_string(topic));
         }

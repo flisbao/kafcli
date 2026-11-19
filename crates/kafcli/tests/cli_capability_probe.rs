@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 // `CARGO_BIN_EXE_*` is not set for examples, so the tests locate `capability_probe` next to the
 // test binary. `cargo test -p kafcli` builds the examples before it runs the integration tests.

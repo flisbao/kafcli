@@ -58,6 +58,8 @@ A `0001` está reservada ao spike do Event Hubs.
 
 - `rdkafka` com features `cmake-build`, `ssl-vendored`, `libz-static`, `curl-static` e `zstd`. O librdkafka 2.12 inclui `curl.h` mesmo com `WITH_CURL=0`, então o curl precisa ser vendorizado para o build compilar. Isso exige `cmake` no build. A feature `zstd` compila `zstd-sys` a partir do fonte, sem biblioteca do sistema, e é necessária para ler tópicos comprimidos com zstd no plano 02.
 - Segredos do keyring: a feature `keyring` de `kafcli-core` é padrão, mas opcional. Quando o keyring não estiver disponível, o fallback sugerido é `env:` ou `file:`.
+- O `cargo audit` não cobre o código C vendorizado (`openssl-src`, `curl-sys`, `rdkafka-sys`, `zstd-sys`, `libz-sys`). A cada release, as versões embutidas são conferidas contra os advisories do OpenSSL, do curl, do librdkafka, do zstd e do zlib. O processo de release do plano 06 inclui essa conferência.
+- Revisão de 2026-11-19: o `deny.toml` ignora RUSTSEC-2026-0370, -0371 e -0372 (`zvariant`, `zvariant_derive`, `zbus_names` sem manutenção). Eles entram via `keyring` 4.2 e `zbus` 5, e não existe versão segura para atualizar. A exceção é revista a cada release do `keyring`.
 
 ### Testes de integração
 

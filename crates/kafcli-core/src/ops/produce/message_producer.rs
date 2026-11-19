@@ -556,7 +556,7 @@ fn ensure_topic_exists(
 ) -> CoreResult<()> {
     let mut config = connection.client_config().clone();
     config.set("allow.auto.create.topics", "false");
-    let consumer = connection.create_consumer(config)?;
+    let consumer = connection.create_consumer(&config)?;
     let metadata = consumer
         .fetch_metadata(Some(topic), timeout)
         .map_err(map_kafka_error)?;
@@ -740,6 +740,10 @@ fn neutralize_text(text: &str) -> String {
         .collect()
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "map adapter: map_err and Iterator::map pass the value"
+)]
 fn map_kafka_error(error: KafkaError) -> CoreError {
     CoreError::Kafka(error.to_string())
 }

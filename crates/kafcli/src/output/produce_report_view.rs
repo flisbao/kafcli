@@ -89,7 +89,7 @@ mod tests {
             deliveries: (0..delivery_count)
                 .map(|index| DeliveryReport {
                     partition: 0,
-                    offset: index as i64,
+                    offset: i64::try_from(index).unwrap(),
                     timestamp: Some("2026-11-17T00:00:00.000Z".to_string()),
                 })
                 .collect(),

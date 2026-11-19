@@ -69,10 +69,10 @@ impl ConfluentSchemaRegistry {
     /// Sends a request and decodes a 2xx JSON answer; any other status becomes an error.
     fn exchange<T: DeserializeOwned>(
         &self,
-        method: Method,
+        method: &Method,
         path_and_query: &str,
         payload: Option<&Value>,
-        lookup: Lookup<'_>,
+        lookup: &Lookup<'_>,
     ) -> CoreResult<T> {
         let body = payload
             .map(serde_json::to_string)
@@ -84,7 +84,7 @@ impl ConfluentSchemaRegistry {
                 .send_request(method.clone(), path_and_query, content_type, body)?;
         let path = path_without_query(path_and_query);
         if !(200..300).contains(&response.status) {
-            return Err(self.error_for_response(&method, path, &lookup, &response));
+            return Err(self.error_for_response(method, path, lookup, &response));
         }
         serde_json::from_slice(&response.body).map_err(|_| {
             registry_error(format!(
@@ -162,7 +162,8 @@ impl SchemaRegistry for ConfluentSchemaRegistry {
             )));
         };
         let path = format!("/schemas/ids/{number}");
-        let body: SchemaByIdBody = self.exchange(Method::GET, &path, None, Lookup::Id(*number))?;
+        let body: SchemaByIdBody =
+            self.exchange(&Method::GET, &path, None, &Lookup::Id(*number))?;
         let kind =
             self.check_schema_shape(body.schema_type.as_deref(), body.references.as_ref())?;
         Ok(RegisteredSchema {
@@ -187,7 +188,7 @@ impl SchemaRegistry for ConfluentSchemaRegistry {
             subject,
             version: version.to_string(),
         };
-        let body: SubjectVersionBody = self.exchange(Method::GET, &path, None, lookup)?;
+        let body: SubjectVersionBody = self.exchange(&Method::GET, &path, None, &lookup)?;
         let kind =
             self.check_schema_shape(body.schema_type.as_deref(), body.references.as_ref())?;
         Ok(RegisteredSchema {
@@ -208,10 +209,10 @@ impl SchemaRegistry for ConfluentSchemaRegistry {
         let path = format!("/subjects/{}/versions", encode_path_segment(subject));
         let payload = schema_payload(kind, text);
         let body: RegisterBody = self.exchange(
-            Method::POST,
+            &Method::POST,
             &path,
             Some(&payload),
-            Lookup::Subject(subject),
+            &Lookup::Subject(subject),
         )?;
         Ok(RegisteredSchema {
             id: SchemaId::Confluent(body.id),
@@ -238,7 +239,8 @@ impl SchemaRegistry for ConfluentSchemaRegistry {
             subject,
             version: version.to_string(),
         };
-        let body: CompatibilityBody = self.exchange(Method::POST, &path, Some(&payload), lookup)?;
+        let body: CompatibilityBody =
+            self.exchange(&Method::POST, &path, Some(&payload), &lookup)?;
         Ok(CompatibilityReport {
             compatible: body.is_compatible,
             messages: body

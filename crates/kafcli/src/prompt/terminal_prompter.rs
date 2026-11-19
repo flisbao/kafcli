@@ -47,6 +47,7 @@ fn ask(question: &str) -> CoreResult<String> {
     let mut limited_stdin = io::stdin().lock().take(MAXIMUM_CONFIRMATION_INPUT_BYTES);
     let mut line = String::new();
     limited_stdin.read_line(&mut line)?;
+    drop(limited_stdin);
     Ok(line.trim_end_matches(['\r', '\n']).trim().to_string())
 }
 

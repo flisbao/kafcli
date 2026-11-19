@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! Produce and consume tests against the Redpanda plaintext broker of `tests/fixtures/compose.yaml`.
 //!
@@ -594,7 +599,7 @@ fn group_second_run_delivers_what_the_first_left() {
     let (first_summary, first_envelopes) = consume_into_sink(&first).unwrap();
 
     let mut second = consume_options(&topic, StartPosition::Earliest);
-    second.group = Some(group.clone());
+    second.group = Some(group);
     let (second_summary, second_envelopes) = consume_into_sink(&second).unwrap();
 
     assert_eq!(first_summary.delivered, 4);

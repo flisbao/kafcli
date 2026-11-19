@@ -431,12 +431,13 @@ mod tests {
 
     fn reader_with_topic(topic: &str, highs: &[i64]) -> FakeClusterReader {
         let mut reader = FakeClusterReader::new(BrokerFamily::GenericKafka);
-        reader
-            .topics
-            .insert(topic.to_owned(), (0..highs.len() as i32).collect());
-        for (partition, high) in highs.iter().enumerate() {
+        reader.topics.insert(
+            topic.to_owned(),
+            (0..i32::try_from(highs.len()).unwrap()).collect(),
+        );
+        for (partition, high) in (0..).zip(highs) {
             reader.watermarks.insert(
-                (topic.to_owned(), partition as i32),
+                (topic.to_owned(), partition),
                 PartitionWatermarks {
                     low: 0,
                     high: *high,

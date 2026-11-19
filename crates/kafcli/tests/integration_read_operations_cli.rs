@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! Read operations (`lag`, `offsets show`, `groups audit`) through the real binary, compared with
 //! the Kafka tools of the `kafka-plaintext` broker of `tests/fixtures/compose.yaml`.
@@ -249,7 +254,8 @@ fn lag_matches_kafka_consumer_groups_describe() {
         .sum();
     assert_eq!(
         total,
-        (PRODUCED_MESSAGES - CONSUMED_MESSAGES) as i64 - uncommitted_backlog(&expected)
+        i64::try_from(PRODUCED_MESSAGES - CONSUMED_MESSAGES).unwrap()
+            - uncommitted_backlog(&expected)
     );
     assert_eq!(
         report["data"]["groups"][0]["total_lag"].as_i64().unwrap(),
@@ -264,7 +270,7 @@ fn uncommitted_backlog(listed: &BTreeMap<(String, i64), (String, String, String)
         .values()
         .map(|(_, log_end, _)| log_end.parse::<i64>().unwrap())
         .sum();
-    PRODUCED_MESSAGES as i64 - listed_messages
+    i64::try_from(PRODUCED_MESSAGES).unwrap() - listed_messages
 }
 
 #[test]
@@ -378,7 +384,7 @@ impl Drop for BackgroundConsumer {
 }
 
 /// Waits until `lag` shows `expected` distinct members in `group`.
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods, reason = "test-only sleep (ADR 0004)")]
 fn wait_for_members(directory: &Path, topic: &str, group: &str, expected: usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(MEMBER_WAIT_SECONDS);
     loop {

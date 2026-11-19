@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests report failures by panicking"
+)]
 
 //! Avro and JSON Schema through the real binary, against the Redpanda plaintext broker and Schema
 //! Registry of `tests/fixtures/compose.yaml`. The Azure cases use a local fake registry instead.
@@ -184,7 +189,7 @@ fn registry_get(path: &str) -> std::io::Result<(u16, String)> {
 /// Waits until the fixture registry answers `GET /subjects` with 200, for up to 30 seconds.
 /// The 500 ms pause between attempts is the readiness poll interval required by the test plan; it is
 /// the only sleep in the test suite and has no client timeout to wait on.
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods, reason = "test-only sleep (ADR 0004)")]
 fn wait_for_registry() {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -662,17 +667,17 @@ fn produce_with_missing_subject_fails_and_registers_nothing() {
 fn nested_node_bytes(levels: usize) -> Vec<u8> {
     let mut bytes = Vec::new();
     for level in 0..levels {
-        push_zigzag_long(&mut bytes, level as i64);
+        push_zigzag_long(&mut bytes, i64::try_from(level).unwrap());
         bytes.push(0x02);
     }
-    push_zigzag_long(&mut bytes, levels as i64);
+    push_zigzag_long(&mut bytes, i64::try_from(levels).unwrap());
     bytes.push(0x00);
     bytes
 }
 
 /// Appends an Avro `long` as zigzag-encoded base-128 varint bytes.
 fn push_zigzag_long(bytes: &mut Vec<u8>, value: i64) {
-    let mut encoded = ((value << 1) ^ (value >> 63)) as u64;
+    let mut encoded = ((value << 1) ^ (value >> 63)).cast_unsigned();
     loop {
         let low = (encoded & 0x7f) as u8;
         encoded >>= 7;
