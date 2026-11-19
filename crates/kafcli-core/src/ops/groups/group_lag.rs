@@ -1,7 +1,9 @@
 //! Consumer lag per partition, topic and group, computed from what the cluster reports.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
+use std::thread;
 
 use serde::Serialize;
 
@@ -100,11 +102,16 @@ pub fn collect_group_lag(
 
     let mut topics = TopicPartitionSource::new(reader, request.topic.as_deref());
     let watermarks = WatermarkCache::new();
+    let mut candidates_per_group = Vec::with_capacity(descriptions.len());
+    for description in &descriptions {
+        candidates_per_group.push(topics.select_candidate_partitions(description)?);
+    }
+    let results = compute_lag_of_groups(reader, &watermarks, &descriptions, &candidates_per_group);
+
     let mut groups = Vec::with_capacity(descriptions.len());
     let mut unreadable_groups = Vec::new();
-    for description in &descriptions {
-        let candidates = topics.select_candidate_partitions(description)?;
-        let group_lag = match compute_group_lag(reader, &watermarks, description, &candidates) {
+    for (description, result) in descriptions.iter().zip(results) {
+        let group_lag = match result {
             Ok(group_lag) => group_lag,
             // With --group the error is the answer; across every group it costs only that group.
             Err(error) if request.group.is_none() => {
@@ -210,6 +217,69 @@ impl<'a> TopicPartitionSource<'a> {
             .map(|(topic, partitions)| (topic.clone(), partitions.clone()))
             .collect())
     }
+}
+
+/// Most groups read at the same time. Each one opens its own client, so this also caps sockets.
+const LAG_WORKERS: usize = 8;
+
+/// Reads the lag of every group on up to `LAG_WORKERS` threads. Results keep the order of
+/// `descriptions`. A single group is read on the calling thread.
+fn compute_lag_of_groups(
+    reader: &dyn ClusterOffsetsReader,
+    watermarks: &WatermarkCache,
+    descriptions: &[GroupDescription],
+    candidates_per_group: &[BTreeMap<String, Vec<i32>>],
+) -> Vec<CoreResult<GroupLag>> {
+    let compute = |index: usize| {
+        compute_group_lag(
+            reader,
+            watermarks,
+            &descriptions[index],
+            &candidates_per_group[index],
+        )
+    };
+    let workers = LAG_WORKERS.min(descriptions.len());
+    if workers <= 1 {
+        return (0..descriptions.len()).map(compute).collect();
+    }
+    let next_index = AtomicUsize::new(0);
+    let mut slots: Vec<Option<CoreResult<GroupLag>>> =
+        (0..descriptions.len()).map(|_| None).collect();
+    let finished: Vec<Vec<(usize, CoreResult<GroupLag>)>> = thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next_index.fetch_add(1, Ordering::Relaxed);
+                        if index >= descriptions.len() {
+                            return done;
+                        }
+                        done.push((index, compute(index)));
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
+    for (index, result) in finished.into_iter().flatten() {
+        slots[index] = Some(result);
+    }
+    slots
+        .into_iter()
+        .zip(descriptions)
+        .map(|(slot, description)| {
+            slot.unwrap_or_else(|| {
+                Err(CoreError::Kafka(format!(
+                    "the worker reading group '{}' stopped unexpectedly",
+                    description.name
+                )))
+            })
+        })
+        .collect()
 }
 
 /// Watermarks already read in one lag sample, shared by every group of the sample. A failed
@@ -393,6 +463,88 @@ mod tests {
             group: Some(name.to_owned()),
             topic: None,
         }
+    }
+
+    #[test]
+    fn parallel_lag_keeps_alphabetical_group_order() {
+        let mut reader = reader_with_topic("t", &[100]);
+        for index in (0..20).rev() {
+            let name = format!("g{index:02}");
+            reader.groups.push(group(&name, Vec::new()));
+            commit(&mut reader, &name, "t", 0, index);
+        }
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        let names: Vec<String> = report.groups.iter().map(|lag| lag.group.clone()).collect();
+        let expected: Vec<String> = (0..20).map(|index| format!("g{index:02}")).collect();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn parallel_lag_reports_failing_group_as_unreadable() {
+        let mut reader = reader_with_topic("t", &[100]);
+        for name in ["g0", "g1", "g2"] {
+            reader.groups.push(group(name, Vec::new()));
+            commit(&mut reader, name, "t", 0, 10);
+        }
+        reader
+            .failing_committed_partitions
+            .insert(("g1".to_owned(), "t".to_owned(), 0));
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        let names: Vec<&str> = report.groups.iter().map(|lag| lag.group.as_str()).collect();
+        assert_eq!(names, vec!["g0", "g2"]);
+        assert_eq!(report.unreadable_groups[0].group, "g1");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("could not read the lag of group 'g1': "))
+        );
+    }
+
+    #[test]
+    fn groups_are_read_on_several_threads() {
+        let mut reader = reader_with_topic("t", &[100]);
+        reader.committed_rendezvous = 2;
+        for index in 0..16 {
+            let name = format!("g{index:02}");
+            reader.groups.push(group(&name, Vec::new()));
+            commit(&mut reader, &name, "t", 0, 1);
+        }
+
+        collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        assert!(reader.committed_threads().len() > 1);
+    }
+
+    #[test]
+    fn single_group_does_not_start_workers() {
+        let mut reader = reader_with_topic("t", &[100]);
+        reader.groups.push(group("g1", Vec::new()));
+        commit(&mut reader, "g1", "t", 0, 1);
+
+        collect_group_lag(&reader, &request_group("g1")).unwrap();
+
+        assert_eq!(
+            reader.committed_threads(),
+            std::collections::HashSet::from([std::thread::current().id()])
+        );
+        assert_eq!(reader.committed_offset_requests().len(), 1);
+    }
+
+    #[test]
+    fn single_group_request_returns_its_error() {
+        let mut reader = reader_with_topic("t", &[100]);
+        reader.groups.push(group("g1", Vec::new()));
+        commit(&mut reader, "g1", "t", 0, 10);
+        reader
+            .failing_committed_partitions
+            .insert(("g1".to_owned(), "t".to_owned(), 0));
+
+        assert!(collect_group_lag(&reader, &request_group("g1")).is_err());
     }
 
     #[test]

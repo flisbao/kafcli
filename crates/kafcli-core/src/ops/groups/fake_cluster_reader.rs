@@ -1,13 +1,32 @@
 //! In-memory `ClusterOffsetsReader` for tests.
 
-use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use crate::capability::broker_capabilities::BrokerFamily;
 use crate::error::{CoreError, CoreResult};
 use crate::ops::groups::cluster_offsets_reader::ClusterOffsetsReader;
 use crate::ops::groups::group_snapshot::{GroupDescription, PartitionWatermarks};
+
+/// `RefCell`-like cell that is `Sync`, so the fake can be shared by worker threads.
+#[derive(Debug, Default)]
+pub struct SyncCell<T>(Mutex<T>);
+
+impl<T> SyncCell<T> {
+    pub fn new(value: T) -> Self {
+        Self(Mutex::new(value))
+    }
+
+    pub fn borrow(&self) -> MutexGuard<'_, T> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn borrow_mut(&self) -> MutexGuard<'_, T> {
+        self.borrow()
+    }
+}
 
 /// One `fetch_committed_offsets` call: the group and the partitions it asked for.
 pub type CommittedOffsetRequest = (String, BTreeMap<String, Vec<i32>>);
@@ -30,16 +49,22 @@ pub struct FakeClusterReader {
     /// `(timestamp_millis, offset)` pairs per `(topic, partition)`, in offset order.
     pub times: BTreeMap<(String, i32), Vec<(i64, i64)>>,
     /// Answers for successive `describe_groups` calls; the last one repeats. Empty means `groups`.
-    pub group_snapshots: RefCell<VecDeque<Vec<GroupDescription>>>,
+    pub group_snapshots: SyncCell<VecDeque<Vec<GroupDescription>>>,
     /// When set, `describe_groups` fails with `CoreError::Kafka` of this text.
     pub describe_failure: Option<String>,
     /// Commits made through a linked fake committer; read before `committed`.
-    pub committed_overrides: RefCell<BTreeMap<(String, String, i32), i64>>,
-    clock: Cell<Instant>,
-    waits: RefCell<Vec<Duration>>,
-    committed_offset_requests: RefCell<Vec<CommittedOffsetRequest>>,
-    offsets_for_time_requests: RefCell<Vec<OffsetsForTimeRequest>>,
-    watermark_requests: Cell<usize>,
+    pub committed_overrides: SyncCell<BTreeMap<(String, String, i32), i64>>,
+    clock: SyncCell<Instant>,
+    waits: SyncCell<Vec<Duration>>,
+    committed_offset_requests: SyncCell<Vec<CommittedOffsetRequest>>,
+    offsets_for_time_requests: SyncCell<Vec<OffsetsForTimeRequest>>,
+    watermark_requests: SyncCell<usize>,
+    /// When above 1, each `fetch_committed_offsets` waits (at most 2 s) until this many calls
+    /// have arrived, so a test can tell parallel callers from serial ones.
+    pub committed_rendezvous: usize,
+    arrivals: Mutex<usize>,
+    arrived: Condvar,
+    committed_threads: SyncCell<HashSet<ThreadId>>,
 }
 
 /// One `find_offsets_for_time` call: topic, partitions and timestamp in milliseconds.
@@ -56,20 +81,24 @@ impl FakeClusterReader {
             failing_watermarks: BTreeSet::new(),
             failing_committed_partitions: BTreeSet::new(),
             times: BTreeMap::new(),
-            group_snapshots: RefCell::new(VecDeque::new()),
+            group_snapshots: SyncCell::new(VecDeque::new()),
             describe_failure: None,
-            committed_overrides: RefCell::new(BTreeMap::new()),
-            clock: Cell::new(Instant::now()),
-            waits: RefCell::new(Vec::new()),
-            committed_offset_requests: RefCell::new(Vec::new()),
-            offsets_for_time_requests: RefCell::new(Vec::new()),
-            watermark_requests: Cell::new(0),
+            committed_overrides: SyncCell::new(BTreeMap::new()),
+            clock: SyncCell::new(Instant::now()),
+            waits: SyncCell::new(Vec::new()),
+            committed_offset_requests: SyncCell::new(Vec::new()),
+            offsets_for_time_requests: SyncCell::new(Vec::new()),
+            watermark_requests: SyncCell::new(0),
+            committed_rendezvous: 0,
+            arrivals: Mutex::new(0),
+            arrived: Condvar::new(),
+            committed_threads: SyncCell::new(HashSet::new()),
         }
     }
 
     /// The fake clock, moved only by `wait_serving_client_events`.
     pub fn now(&self) -> Instant {
-        self.clock.get()
+        *self.clock.borrow()
     }
 
     /// Every interval passed to `wait_serving_client_events`, in order.
@@ -91,9 +120,26 @@ impl FakeClusterReader {
         self.offsets_for_time_requests.borrow().clone()
     }
 
+    fn wait_for_rendezvous(&self) {
+        let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        *arrivals += 1;
+        self.arrived.notify_all();
+        let _released = self
+            .arrived
+            .wait_timeout_while(arrivals, Duration::from_secs(2), |count| {
+                *count < self.committed_rendezvous
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+
+    /// The threads that called `fetch_committed_offsets`.
+    pub fn committed_threads(&self) -> HashSet<ThreadId> {
+        self.committed_threads.borrow().clone()
+    }
+
     /// How many times `fetch_watermarks` was called.
     pub fn watermark_requests(&self) -> usize {
-        self.watermark_requests.get()
+        *self.watermark_requests.borrow()
     }
 
     /// The `(group, partitions)` arguments of every `fetch_committed_offsets` call, in order.
@@ -133,6 +179,12 @@ impl ClusterOffsetsReader for FakeClusterReader {
         self.committed_offset_requests
             .borrow_mut()
             .push((group.to_owned(), partitions.clone()));
+        self.committed_threads
+            .borrow_mut()
+            .insert(thread::current().id());
+        if self.committed_rendezvous > 1 {
+            self.wait_for_rendezvous();
+        }
         let mut offsets = BTreeMap::new();
         for (topic, topic_partitions) in partitions {
             for partition in topic_partitions {
@@ -157,8 +209,7 @@ impl ClusterOffsetsReader for FakeClusterReader {
     }
 
     fn fetch_watermarks(&self, topic: &str, partition: i32) -> CoreResult<PartitionWatermarks> {
-        self.watermark_requests
-            .set(self.watermark_requests.get() + 1);
+        *self.watermark_requests.borrow_mut() += 1;
         if self
             .failing_watermarks
             .contains(&(topic.to_owned(), partition))
@@ -200,7 +251,7 @@ impl ClusterOffsetsReader for FakeClusterReader {
     }
 
     fn wait_serving_client_events(&self, interval: Duration) {
-        self.clock.set(self.clock.get() + interval);
+        *self.clock.borrow_mut() += interval;
         self.waits.borrow_mut().push(interval);
     }
 

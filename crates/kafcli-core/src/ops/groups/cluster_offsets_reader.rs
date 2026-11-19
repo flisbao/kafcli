@@ -8,7 +8,7 @@ use crate::error::CoreResult;
 use crate::ops::groups::group_snapshot::{GroupDescription, PartitionWatermarks};
 
 /// Reads groups, topics and offsets from a cluster without changing anything.
-pub trait ClusterOffsetsReader {
+pub trait ClusterOffsetsReader: Sync {
     /// Describes one group, or every group when `group` is `None`. Groups that do not exist are
     /// left out.
     fn describe_groups(&self, group: Option<&str>) -> CoreResult<Vec<GroupDescription>>;
