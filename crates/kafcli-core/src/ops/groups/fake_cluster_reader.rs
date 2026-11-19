@@ -39,6 +39,7 @@ pub struct FakeClusterReader {
     waits: RefCell<Vec<Duration>>,
     committed_offset_requests: RefCell<Vec<CommittedOffsetRequest>>,
     offsets_for_time_requests: RefCell<Vec<OffsetsForTimeRequest>>,
+    watermark_requests: Cell<usize>,
 }
 
 /// One `find_offsets_for_time` call: topic, partitions and timestamp in milliseconds.
@@ -62,6 +63,7 @@ impl FakeClusterReader {
             waits: RefCell::new(Vec::new()),
             committed_offset_requests: RefCell::new(Vec::new()),
             offsets_for_time_requests: RefCell::new(Vec::new()),
+            watermark_requests: Cell::new(0),
         }
     }
 
@@ -87,6 +89,11 @@ impl FakeClusterReader {
     /// The arguments of every `find_offsets_for_time` call, in order.
     pub fn offsets_for_time_requests(&self) -> Vec<OffsetsForTimeRequest> {
         self.offsets_for_time_requests.borrow().clone()
+    }
+
+    /// How many times `fetch_watermarks` was called.
+    pub fn watermark_requests(&self) -> usize {
+        self.watermark_requests.get()
     }
 
     /// The `(group, partitions)` arguments of every `fetch_committed_offsets` call, in order.
@@ -150,6 +157,8 @@ impl ClusterOffsetsReader for FakeClusterReader {
     }
 
     fn fetch_watermarks(&self, topic: &str, partition: i32) -> CoreResult<PartitionWatermarks> {
+        self.watermark_requests
+            .set(self.watermark_requests.get() + 1);
         if self
             .failing_watermarks
             .contains(&(topic.to_owned(), partition))

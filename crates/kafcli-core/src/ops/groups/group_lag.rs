@@ -1,13 +1,14 @@
 //! Consumer lag per partition, topic and group, computed from what the cluster reports.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 
 use serde::Serialize;
 
 use crate::capability::broker_operation::incomplete_group_list_warning;
 use crate::error::{CoreError, CoreResult};
 use crate::ops::groups::cluster_offsets_reader::ClusterOffsetsReader;
-use crate::ops::groups::group_snapshot::GroupDescription;
+use crate::ops::groups::group_snapshot::{GroupDescription, PartitionWatermarks};
 
 /// State shown for a group that `DescribeGroups` did not report but that has committed offsets.
 const UNKNOWN_GROUP_STATE: &str = "Unknown";
@@ -98,11 +99,12 @@ pub fn collect_group_lag(
     descriptions.sort_by(|left, right| left.name.cmp(&right.name));
 
     let mut topics = TopicPartitionSource::new(reader, request.topic.as_deref());
+    let watermarks = WatermarkCache::new();
     let mut groups = Vec::with_capacity(descriptions.len());
     let mut unreadable_groups = Vec::new();
     for description in &descriptions {
         let candidates = topics.select_candidate_partitions(description)?;
-        let group_lag = match compute_group_lag(reader, description, &candidates) {
+        let group_lag = match compute_group_lag(reader, &watermarks, description, &candidates) {
             Ok(group_lag) => group_lag,
             // With --group the error is the answer; across every group it costs only that group.
             Err(error) if request.group.is_none() => {
@@ -210,8 +212,43 @@ impl<'a> TopicPartitionSource<'a> {
     }
 }
 
+/// Watermarks already read in one lag sample, shared by every group of the sample. A failed
+/// fetch is not stored, so the next group asks again.
+struct WatermarkCache {
+    known: Mutex<BTreeMap<(String, i32), PartitionWatermarks>>,
+}
+
+impl WatermarkCache {
+    fn new() -> Self {
+        Self {
+            known: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn get(
+        &self,
+        reader: &dyn ClusterOffsetsReader,
+        topic: &str,
+        partition: i32,
+    ) -> CoreResult<PartitionWatermarks> {
+        let key = (topic.to_owned(), partition);
+        if let Some(found) = self.lock().get(&key) {
+            return Ok(*found);
+        }
+        let fetched = reader.fetch_watermarks(topic, partition)?;
+        self.lock().insert(key, fetched);
+        Ok(fetched)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<(String, i32), PartitionWatermarks>> {
+        // The map only caches broker answers, so a poisoned lock still holds valid entries.
+        self.known.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 fn compute_group_lag(
     reader: &dyn ClusterOffsetsReader,
+    watermarks_cache: &WatermarkCache,
     description: &GroupDescription,
     candidates: &BTreeMap<String, Vec<i32>>,
 ) -> CoreResult<GroupLag> {
@@ -231,7 +268,7 @@ fn compute_group_lag(
             if committed_offset.is_none() && member.is_none() {
                 continue;
             }
-            let watermarks = reader.fetch_watermarks(topic, *partition)?;
+            let watermarks = watermarks_cache.get(reader, topic, *partition)?;
             partition_lags.push(PartitionLag {
                 topic: topic.clone(),
                 partition: *partition,
@@ -356,6 +393,21 @@ mod tests {
             group: Some(name.to_owned()),
             topic: None,
         }
+    }
+
+    #[test]
+    fn watermarks_are_fetched_once_per_partition_across_groups() {
+        let mut reader = reader_with_topic("t", &[100, 100]);
+        for name in ["g1", "g2"] {
+            reader.groups.push(group(name, Vec::new()));
+            commit(&mut reader, name, "t", 0, 10);
+            commit(&mut reader, name, "t", 1, 20);
+        }
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        assert_eq!(report.groups.len(), 2);
+        assert_eq!(reader.watermark_requests(), 2);
     }
 
     #[test]
