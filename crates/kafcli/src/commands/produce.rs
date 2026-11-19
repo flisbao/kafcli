@@ -20,7 +20,7 @@ use kafcli_core::guard::guard_enforcer::enforce_guard;
 use kafcli_core::guard::guard_request::GuardRequest;
 use kafcli_core::guard::operation_level::OperationLevel;
 use kafcli_core::ops::produce::message_producer::{
-    ProduceOptions, prepare_messages, produce_messages, stream_messages,
+    ProduceFailure, ProduceOptions, prepare_messages, produce_messages, stream_messages,
 };
 use kafcli_core::ops::produce::produce_input::{
     InputMode, InputSource, ProduceInput, read_produce_inputs,
@@ -130,9 +130,10 @@ pub fn produce(
         &mut messages,
     ) {
         Ok(report) => report,
-        Err(error) => {
-            write_audit_record(&context_name, &target, AuditOutcome::Failed, None);
-            return Err(error.into());
+        Err(failure) => {
+            let after = failure_audit_after(&failure);
+            write_audit_record(&context_name, &target, AuditOutcome::Failed, after);
+            return Err(failure.error.into());
         }
     };
 
@@ -217,10 +218,54 @@ fn write_audit_record(
     }
 }
 
+/// The audit `after` of a failed run: the counts when part of the run was sent, otherwise none.
+fn failure_audit_after(failure: &ProduceFailure) -> Option<Value> {
+    failure
+        .partial
+        .as_ref()
+        .map(|report| json!({"sent": report.sent, "failed": report.failed}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::produce_arguments::ProduceWire;
+    use kafcli_core::error::CoreError;
+    use kafcli_core::ops::produce::message_producer::ProduceReport;
+
+    fn partial_report(sent: u64, failed: u64) -> ProduceReport {
+        ProduceReport {
+            topic: "orders".to_owned(),
+            sent,
+            failed,
+            deliveries: Vec::new(),
+            deliveries_truncated: false,
+            first_error: None,
+        }
+    }
+
+    #[test]
+    fn stream_failure_audit_records_partial_counts() {
+        let failure = ProduceFailure {
+            error: CoreError::InvalidInput("encode failed".to_owned()),
+            partial: Some(Box::new(partial_report(1, 4))),
+        };
+
+        assert_eq!(
+            failure_audit_after(&failure),
+            Some(json!({"sent": 1, "failed": 4}))
+        );
+    }
+
+    #[test]
+    fn failure_before_sending_has_no_audit_counts() {
+        let failure = ProduceFailure {
+            error: CoreError::Kafka("broker down".to_owned()),
+            partial: None,
+        };
+
+        assert_eq!(failure_audit_after(&failure), None);
+    }
     use crate::cli::schema_source_arguments::SchemaSourceArguments;
 
     #[test]

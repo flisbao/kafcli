@@ -220,6 +220,29 @@ fn prepared_message_bytes(message: &PreparedMessage) -> usize {
         .saturating_add(header_bytes)
 }
 
+/// Why a produce run failed. `partial` is the report of what was sent when the failure came
+/// from the message stream after the run started; it is `None` when nothing was sent.
+#[derive(Debug)]
+pub struct ProduceFailure {
+    pub error: CoreError,
+    pub partial: Option<Box<ProduceReport>>,
+}
+
+impl From<CoreError> for ProduceFailure {
+    fn from(error: CoreError) -> Self {
+        Self {
+            error,
+            partial: None,
+        }
+    }
+}
+
+impl From<ProduceFailure> for CoreError {
+    fn from(failure: ProduceFailure) -> Self {
+        failure.error
+    }
+}
+
 /// Sends the prepared messages to `options.topic` and waits for the broker's acknowledgements.
 ///
 /// The topic is checked in cluster metadata before anything is sent. A full local queue is retried
@@ -230,7 +253,7 @@ pub fn produce_messages(
     settings: &ConnectionSettings,
     options: &ProduceOptions,
     messages: &mut dyn Iterator<Item = CoreResult<PreparedMessage>>,
-) -> CoreResult<ProduceReport> {
+) -> Result<ProduceReport, ProduceFailure> {
     let tuning = resolve_producer_tuning(detect_broker_family(context));
     let connection = build_kafka_connection(context, resolver, settings)?;
     ensure_topic_exists(&connection, &options.topic, options.timeout)?;
@@ -295,10 +318,13 @@ pub fn produce_messages(
     tally.collect(&receiver);
     let report = tally.into_report(options.topic.clone(), total);
     match stream_error {
-        Some(error) => Err(error.with_context(&format!(
-            "{} messages were acknowledged before the error",
-            report.sent
-        ))),
+        Some(error) => Err(ProduceFailure {
+            error: error.with_context(&format!(
+                "{} messages were acknowledged before the error",
+                report.sent
+            )),
+            partial: Some(Box::new(report)),
+        }),
         None => Ok(report),
     }
 }

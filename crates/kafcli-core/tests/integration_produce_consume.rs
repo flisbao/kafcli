@@ -143,6 +143,7 @@ fn produce_three_messages(topic: &str) -> CoreResult<ProduceReport> {
         &options,
         &mut messages.into_iter().map(Ok),
     )
+    .map_err(CoreError::from)
 }
 
 #[test]
@@ -181,9 +182,10 @@ fn stream_error_after_first_messages_reports_acknowledged_count() {
     )
     .unwrap_err();
 
-    assert!(matches!(error, CoreError::InvalidInput(_)));
+    assert_eq!(error.partial.as_ref().map(|report| report.sent), Some(1));
+    assert!(matches!(error.error, CoreError::InvalidInput(_)));
     assert_eq!(
-        error.to_string(),
+        error.error.to_string(),
         "invalid input: encode failed; 1 messages were acknowledged before the error"
     );
 }
@@ -293,6 +295,7 @@ fn produce_prepared(topic: &str, messages: Vec<PreparedMessage>) -> CoreResult<P
         &produce_options(topic),
         &mut messages.into_iter().map(Ok),
     )
+    .map_err(CoreError::from)
 }
 
 fn json_value(index: usize) -> Vec<u8> {
