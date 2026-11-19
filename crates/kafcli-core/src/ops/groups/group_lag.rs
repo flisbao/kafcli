@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread;
 
 use serde::Serialize;
@@ -282,11 +282,15 @@ fn compute_lag_of_groups(
         .collect()
 }
 
-/// Watermarks already read in one lag sample, shared by every group of the sample. A failed
-/// fetch is not stored, so the next group asks again.
+/// Watermarks of one lag sample, shared by every group of the sample. Each partition is fetched
+/// once: concurrent workers wait for the first fetch, and a failure is kept for the sample too,
+/// so a partition without a leader costs one timeout instead of one per group.
 struct WatermarkCache {
-    known: Mutex<BTreeMap<(String, i32), PartitionWatermarks>>,
+    known: Mutex<BTreeMap<(String, i32), Arc<WatermarkCell>>>,
 }
+
+/// One partition's fetch: empty until the first worker stores the answer or the error text.
+type WatermarkCell = OnceLock<Result<PartitionWatermarks, String>>;
 
 impl WatermarkCache {
     fn new() -> Self {
@@ -301,18 +305,27 @@ impl WatermarkCache {
         topic: &str,
         partition: i32,
     ) -> CoreResult<PartitionWatermarks> {
-        let key = (topic.to_owned(), partition);
-        if let Some(found) = self.lock().get(&key) {
-            return Ok(*found);
+        let cell = {
+            // The map only caches broker answers, so a poisoned lock still holds valid entries.
+            let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(known.entry((topic.to_owned(), partition)).or_default())
+        };
+        let mut first_error = None;
+        let stored = cell.get_or_init(|| {
+            reader.fetch_watermarks(topic, partition).map_err(|error| {
+                let text = error.to_string();
+                first_error = Some(error);
+                text
+            })
+        });
+        if let Some(error) = first_error {
+            return Err(error);
         }
-        let fetched = reader.fetch_watermarks(topic, partition)?;
-        self.lock().insert(key, fetched);
-        Ok(fetched)
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<(String, i32), PartitionWatermarks>> {
-        // The map only caches broker answers, so a poisoned lock still holds valid entries.
-        self.known.lock().unwrap_or_else(PoisonError::into_inner)
+        stored.as_ref().copied().map_err(|text| {
+            CoreError::Kafka(format!(
+                "watermarks of {topic}/{partition} could not be read in this sample ({text})"
+            ))
+        })
     }
 }
 
@@ -549,6 +562,45 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_groups_share_one_watermark_fetch() {
+        let mut reader = reader_with_topic("t", &[100]);
+        reader.watermark_rendezvous = 2;
+        for index in 0..16 {
+            let name = format!("g{index:02}");
+            reader.groups.push(group(&name, Vec::new()));
+            commit(&mut reader, &name, "t", 0, 1);
+        }
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        assert_eq!(report.groups.len(), 16);
+        assert_eq!(reader.watermark_requests(), 1);
+    }
+
+    #[test]
+    fn failed_watermarks_are_read_once_per_sample() {
+        let mut reader = reader_with_topic("t", &[100]);
+        reader.failing_watermarks.insert(("t".to_owned(), 0));
+        for name in ["g0", "g1", "g2"] {
+            reader.groups.push(group(name, Vec::new()));
+            commit(&mut reader, name, "t", 0, 1);
+        }
+
+        let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
+
+        assert_eq!(report.unreadable_groups.len(), 3);
+        assert_eq!(reader.watermark_requests(), 1);
+        assert!(
+            report
+                .unreadable_groups
+                .iter()
+                .all(|unreadable| unreadable.error.contains("LeaderNotAvailable")),
+            "{:?}",
+            report.unreadable_groups
+        );
+    }
+
+    #[test]
     fn watermarks_are_fetched_once_per_partition_across_groups() {
         let mut reader = reader_with_topic("t", &[100, 100]);
         for name in ["g1", "g2"] {
@@ -765,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_one_group_at_a_time() {
+    fn reads_offsets_once_per_group() {
         let mut reader = reader_with_topic("pedidos", &[10]);
         for name in ["a", "b", "c"] {
             reader.groups.push(group(name, Vec::new()));
@@ -774,11 +826,12 @@ mod tests {
 
         let report = collect_group_lag(&reader, &LagRequest::default()).unwrap();
 
-        let requested: Vec<String> = reader
+        let mut requested: Vec<String> = reader
             .committed_offset_requests()
             .into_iter()
             .map(|(group, _)| group)
             .collect();
+        requested.sort();
         assert_eq!(requested, vec!["a", "b", "c"]);
         assert_eq!(report.groups.len(), 3);
     }

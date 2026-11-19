@@ -64,6 +64,10 @@ pub struct FakeClusterReader {
     pub committed_rendezvous: usize,
     arrivals: Mutex<usize>,
     arrived: Condvar,
+    /// Same as `committed_rendezvous`, for `fetch_watermarks`.
+    pub watermark_rendezvous: usize,
+    watermark_arrivals: Mutex<usize>,
+    watermark_arrived: Condvar,
     committed_threads: SyncCell<HashSet<ThreadId>>,
 }
 
@@ -92,6 +96,9 @@ impl FakeClusterReader {
             committed_rendezvous: 0,
             arrivals: Mutex::new(0),
             arrived: Condvar::new(),
+            watermark_rendezvous: 0,
+            watermark_arrivals: Mutex::new(0),
+            watermark_arrived: Condvar::new(),
             committed_threads: SyncCell::new(HashSet::new()),
         }
     }
@@ -121,15 +128,7 @@ impl FakeClusterReader {
     }
 
     fn wait_for_rendezvous(&self) {
-        let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
-        *arrivals += 1;
-        self.arrived.notify_all();
-        let _released = self
-            .arrived
-            .wait_timeout_while(arrivals, Duration::from_secs(2), |count| {
-                *count < self.committed_rendezvous
-            })
-            .unwrap_or_else(PoisonError::into_inner);
+        wait_for_arrivals(&self.arrivals, &self.arrived, self.committed_rendezvous);
     }
 
     /// The threads that called `fetch_committed_offsets`.
@@ -210,6 +209,13 @@ impl ClusterOffsetsReader for FakeClusterReader {
 
     fn fetch_watermarks(&self, topic: &str, partition: i32) -> CoreResult<PartitionWatermarks> {
         *self.watermark_requests.borrow_mut() += 1;
+        if self.watermark_rendezvous > 1 {
+            wait_for_arrivals(
+                &self.watermark_arrivals,
+                &self.watermark_arrived,
+                self.watermark_rendezvous,
+            );
+        }
         if self
             .failing_watermarks
             .contains(&(topic.to_owned(), partition))
@@ -258,6 +264,16 @@ impl ClusterOffsetsReader for FakeClusterReader {
     fn broker_family(&self) -> BrokerFamily {
         self.family
     }
+}
+
+/// Counts one arrival and waits (at most 2 s) until `expected` arrivals were counted.
+fn wait_for_arrivals(arrivals: &Mutex<usize>, arrived: &Condvar, expected: usize) {
+    let mut count = arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+    *count += 1;
+    arrived.notify_all();
+    let _released = arrived
+        .wait_timeout_while(count, Duration::from_secs(2), |count| *count < expected)
+        .unwrap_or_else(PoisonError::into_inner);
 }
 
 #[cfg(test)]

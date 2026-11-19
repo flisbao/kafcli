@@ -100,7 +100,7 @@ O plano 05 usa `partitions` como formato do backup de offsets antes de `offsets 
 
 - O merge do branch depende da rodada real do roteiro do Event Hubs (ADR 0001). Sem ela, os status `Unverified`/`EmulatorOnly` continuam valendo, com os avisos e erros descritos aqui.
 - Os testes automatizados usam o `FakeClusterReader` (feature `test-support`) para a conta do lag e funções puras para o protocolo, as regras e a renderização. O leitor real é coberto pela fixture `kafka-plaintext` (Apache Kafka 4.1.1), que compara o `lag` com `kafka-consumer-groups.sh --describe` e o `offsets show` com `kafka-get-offsets.sh`, e detecta R1 com dois consumers de serviços diferentes no mesmo grupo.
-- `--all-groups` e `groups audit` sem `--group` fazem uma leitura de offsets por grupo, em sequência. Num cluster com muitos grupos o comando é proporcionalmente lento, em troca de nunca manter mais de um consumer de grupo aberto.
+- `--all-groups` e `groups audit` sem `--group` fazem uma leitura de offsets por grupo. Até o plano 05 ela era em sequência, para nunca manter mais de um consumer de grupo aberto. Desde o plano 05b (2026-11-19), o `lag` sem `--group` lê até 8 grupos ao mesmo tempo (`LAG_WORKERS`), com no máximo 8 consumers de grupo abertos. Os watermarks de cada partição são lidos uma vez por amostra e compartilhados entre os grupos, inclusive quando a leitura falha. A saída continua em ordem alfabética, e com um único grupo nenhuma thread extra é criada. O `groups audit` continua chamando a leitura uma vez por grupo vazio, em sequência.
 - Grupos do KIP-848 ficam sem membros decodificados até o rdkafka expor o `ConsumerGroupDescribe`.
 
 ## Fora do escopo
