@@ -43,7 +43,7 @@ A `0001` está reservada ao spike do Event Hubs.
 - Saída JSON não sofre sanitização, para ser lossless. Ela segue o envelope `{"kafcli_output": 1, "data": ...}`.
 - Exit codes: `0` sucesso, `1` erro, `2` limite violado (reservado ao plano 04), `3` operação abortada.
 - Erros de uso da linha de comando (subcomando desconhecido, valor inválido como `--timeout-seconds 0`) saem com `1`. O `2` padrão do clap não é usado, porque `2` é reservado para limites. `--help` e `--version` saem com `0`.
-- Permissões do audit log em unix: diretório `0700` e arquivo `0600`, aplicadas na criação. Um arquivo já existente mantém o modo que tinha. O arquivo recebe `sync_all` após cada registro.
+- Permissões do audit log em unix: diretório `0700` e arquivo `0600`, aplicadas na criação. Desde a revisão de 2026-11-19, um log existente com bits de grupo ou outros é reduzido para `0600` quando possível, e um log que é link simbólico é recusado (ADR 0007, "Permissões de arquivos de estado"). O arquivo recebe `sync_all` após cada registro.
 - Mensagens de confirmação do guard são montadas uma única vez, no guard. O terminal imprime o texto como está, sanitizado.
 
 ### Convenções de código

@@ -69,7 +69,7 @@ O ADR 0001 continua provisório. Três linhas dele importam aqui: `OffsetsForTim
 ### Backup
 
 - Em `<state dir>/offsets-backup/<grupo>-<YYYYMMDDTHHMMSS.mmmZ>.json`. O grupo é reduzido a `[A-Za-z0-9._-]` e a 100 bytes. Um nome já usado recebe `-1` a `-9`, e o arquivo é criado com `create_new`, nunca sobrescrito.
-- Diretório `0700` e arquivo `0600` em unix. `sync_all` antes de seguir. Backup que não pode ser escrito aborta antes do commit.
+- Diretório `0700` e arquivo `0600` em unix, aplicados na criação. Um diretório que já existe mantém o modo que tem (ver "Permissões de arquivos de estado" abaixo). `sync_all` antes de seguir. Backup que não pode ser escrito aborta antes do commit.
 - Formato: `kafcli_offsets_backup: 1`, `created_at`, `context`, `group`, `command` e `partitions` com os campos do `offsets show` (ADR 0006), com o estado antes da mudança. Campos desconhecidos são aceitos na leitura, porque o contrato só cresce.
 - A leitura recusa arquivo acima de 16 MiB (pelo tamanho e com `take` como segunda barreira), JSON inválido (o erro do serde não carrega o conteúdo), versão diferente de 1 e `partitions` vazio.
 
@@ -104,6 +104,30 @@ O ADR 0001 continua provisório. Três linhas dele importam aqui: `OffsetsForTim
 - Erro por partição do `OffsetFetch` agora é erro, e não "sem commit". Sem isso, o backup gravaria `null` onde havia offset.
 - No `lag --all-groups`, um grupo cujo lag não pode ser lido sai do relatório, entra em `unreadable_groups` e gera aviso. Com `--max-lag`, um relatório sem grupo acima do limite mas com grupos ilegíveis sai com `IncompleteLimitCheck` (exit 1). Com `--group`, o erro continua sendo devolvido.
 - No `groups audit`, erro de lag de um grupo vazio vira aviso, e o grupo segue sem R3.
+
+### Permissões de arquivos de estado (revisão de 2026-11-19)
+
+A revisão de hardening (plano 05b) mudou como o kafcli trata permissões do diretório de estado, do `audit.log` e do diretório de backup. Uma revisão automática de segurança pediu depois regras mais rígidas. Elas foram avaliadas e não entraram. Esta seção registra o risco aceito.
+
+O que o código faz hoje, em unix:
+
+- Diretórios de estado e de backup recebem `0700` só quando o kafcli os cria. Um diretório que já existe nunca recebe `chmod`, porque ele pode ser do usuário (um `~/.local/state` compartilhado, um diretório montado) e mudar o modo dele seria uma surpresa.
+- O `audit.log` é criado com `0600`. Um log que já existe com bits de grupo ou de outros é reduzido para `0600` pelo descritor aberto (`fchmod`), sem seguir caminho. Se o sistema recusa (`PermissionDenied`, por exemplo um arquivo de outro dono), o kafcli registra um `warn` e grava o registro mesmo assim.
+- O `audit.log` que é link simbólico é recusado (`audit log '<caminho>' is a symbolic link`). A checagem usa `symlink_metadata` antes do `open`.
+
+Sugestões avaliadas e não adotadas:
+
+1. **Recusar gravar o audit quando o modo não pode ser reduzido.** O audit nunca falha o comando (ver "Audit log" acima). Recusar trocaria um risco de leitura por perda do registro da operação, que é pior para quem investiga depois.
+2. **Reduzir o modo de diretórios existentes quando o dono é o usuário, e recusar diretórios graváveis por grupo ou outros.** Saber o uid do processo exige `libc` (`getuid`), e o projeto não adiciona dependência neste plano (`unsafe_code = "forbid"` também impede a chamada direta).
+3. **Abrir o `audit.log` com `O_NOFOLLOW`.** Fecharia a janela entre o `symlink_metadata` e o `open`. Também exige `libc` para a constante, pelo mesmo motivo.
+
+Por que o risco é aceito:
+
+- Em relação ao comportamento anterior ao plano 05b não há regressão: antes, diretórios e logs existentes também mantinham o modo, e não havia recusa de link simbólico.
+- O conteúdo exposto é baixo. O audit guarda contexto, comando, alvo, resultado e offsets, nunca key, valor, header nem segredo. O backup guarda offsets.
+- A corrida do link simbólico exige que outro usuário já possa escrever no diretório de estado. Nesse caso o atacante já pode apagar ou trocar o log, e `O_NOFOLLOW` não mudaria isso.
+
+Quando revisar: se o projeto aceitar `libc` (ou `rustix`) por outro motivo, as sugestões 2 e 3 passam a ter custo baixo e devem entrar.
 
 ## Consequências
 
