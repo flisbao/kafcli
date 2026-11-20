@@ -23,14 +23,14 @@ curl -fsSL https://raw.githubusercontent.com/flisbao/kafcli/main/scripts/install
 To install a specific version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/flisbao/kafcli/main/scripts/install.sh | KAFCLI_VERSION=0.0.1 bash
+curl -fsSL https://raw.githubusercontent.com/flisbao/kafcli/main/scripts/install.sh | KAFCLI_VERSION=0.0.2 bash
 ```
 
 Or download the package yourself and install it:
 
 ```sh
-curl -fsSLO https://github.com/flisbao/kafcli/releases/download/v0.0.1/kafcli_0.0.1_amd64.deb
-sudo apt install ./kafcli_0.0.1_amd64.deb
+curl -fsSLO https://github.com/flisbao/kafcli/releases/download/v0.0.2/kafcli_0.0.2_amd64.deb
+sudo apt install ./kafcli_0.0.2_amd64.deb
 ```
 
 The binary is statically linked, so the package has no runtime dependencies. Remove it with
@@ -215,12 +215,15 @@ Releases are built by `.github/workflows/release.yml` when a version tag is push
 match the version in `Cargo.toml`:
 
 ```sh
-git tag v0.0.1
-git push origin v0.0.1
+git tag v0.0.2
+git push origin v0.0.2
 ```
 
 The workflow builds the Linux (musl, static) and macOS binaries, the `.deb`, installs the `.deb`
 on the runner as a smoke test, and publishes the release with a `SHA256SUMS` file.
+
+The macOS build is best effort. If it fails or GitHub cancels it while it waits for a runner, the
+release is still published with the Linux archive and the `.deb`, and the run shows a warning.
 
 ## License
 

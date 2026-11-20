@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes a GitHub release when a version tag is pushed:
-#   git tag v0.0.1 && git push origin v0.0.1
+#   git tag v0.0.2 && git push origin v0.0.2
 # The tag must match the workspace version in Cargo.toml.
 
 on:
@@ -36,8 +36,10 @@ jobs:
     name: build (${{ matrix.target }})
     needs: check-version
     runs-on: ${{ matrix.os }}
+    # The macOS leg is best effort: macOS runners can sit in the queue until GitHub cancels the
+    # job, and that must not block the Linux artifacts that the install script depends on.
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -110,8 +112,11 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Runs even when a build leg failed or was cancelled, so a stuck macOS runner does not hold the
+  # release back. The Linux artifacts are checked explicitly below instead.
   publish:
     needs: [check-version, build]
+    if: ${{ !cancelled() && needs.check-version.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,6 +128,16 @@ jobs:
           path: dist
           pattern: release-*
           merge-multiple: true
+
+      - name: Require the Linux artifacts
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          for required in "dist/kafcli-${VERSION}-x86_64-unknown-linux-musl.tar.gz" "dist/kafcli_${VERSION}_amd64.deb"; do
+            [ -f "$required" ] || { echo "missing $required" >&2; exit 1; }
+          done
+          [ -f "dist/kafcli-${VERSION}-aarch64-apple-darwin.tar.gz" ] \
+            || echo "::warning::macOS build missing, publishing without the aarch64-apple-darwin archive"
 
       - name: Write checksums
         working-directory: dist
