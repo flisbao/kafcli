@@ -126,7 +126,7 @@ fn render_group_table(group: &str, partitions: &[&PartitionLag]) -> String {
         Cell::new("CURRENT-OFFSET"),
         Cell::new("LOG-END-OFFSET"),
         Cell::new("LAG"),
-        Cell::new("CONSUMER-ID"),
+        Cell::new("MEMBER"),
         Cell::new("HOST"),
         Cell::new("CLIENT-ID"),
     ]);
@@ -141,7 +141,7 @@ fn render_group_table(group: &str, partitions: &[&PartitionLag]) -> String {
             Cell::new(partition.log_end_offset),
             Cell::new(format_optional(partition.lag)),
             Cell::new(member.map_or(NULL_CELL.to_owned(), |member| {
-                sanitize_for_terminal(&member.member_id)
+                short_member_id(&member.member_id, &member.client_id)
             })),
             Cell::new(member.map_or(NULL_CELL.to_owned(), |member| {
                 sanitize_for_terminal(&member.host)
@@ -152,6 +152,26 @@ fn render_group_table(group: &str, partitions: &[&PartitionLag]) -> String {
         ]);
     }
     table.to_string()
+}
+
+/// Characters of the member id kept in the `MEMBER` column.
+const SHORT_MEMBER_ID_LENGTH: usize = 8;
+
+/// The part of a member id that tells instances apart, cut to `SHORT_MEMBER_ID_LENGTH` characters.
+///
+/// Kafka builds member ids as `<client-id>-<uuid>`, and Azure Event Hubs adds a
+/// `<namespace>:c:<group>:I:` prefix, so the text after the last `<client-id>-` is the unique part.
+/// Instances often share a client id, so the client id alone does not identify them.
+fn short_member_id(member_id: &str, client_id: &str) -> String {
+    let unique = if client_id.is_empty() {
+        member_id
+    } else {
+        member_id
+            .rsplit_once(&format!("{client_id}-"))
+            .map_or(member_id, |(_, suffix)| suffix)
+    };
+    let short: String = unique.chars().take(SHORT_MEMBER_ID_LENGTH).collect();
+    sanitize_for_terminal(&short)
 }
 
 fn format_optional(value: Option<i64>) -> String {
@@ -290,12 +310,19 @@ mod tests {
             "CURRENT-OFFSET",
             "LOG-END-OFFSET",
             "LAG",
-            "CONSUMER-ID",
+            "MEMBER",
             "HOST",
             "CLIENT-ID",
         ] {
             assert!(table.contains(column), "missing {column}: {table}");
         }
+        assert!(!table.contains("CONSUMER-ID"), "{table}");
+        assert!(!table.contains("consumer-1-abc"), "{table}");
+        let first_row = table
+            .lines()
+            .find(|line| line.contains("pedidos") && line.contains(" 0 "))
+            .unwrap_or_else(|| panic!("no row for partition 0: {table}"));
+        assert!(first_row.contains(" abc "), "{first_row}");
         let second_row = table
             .lines()
             .find(|line| line.contains("pedidos") && line.contains(" 1 "))
@@ -327,5 +354,30 @@ mod tests {
         let view = view_with(true, vec![partition(0, Some(90), Some(member))]);
 
         assert!(!view.render_table().contains('\x1b'));
+    }
+
+    #[test]
+    fn short_member_id_keeps_uuid_prefix_of_event_hubs_id() {
+        let id = "evh-x.servicebus.windows.net:c:hpg-group-billing:I:src-bridge-consumer-0-8807c20668ac4abb9afa5eb4f21c714e";
+        assert_eq!(short_member_id(id, "src-bridge-consumer-0"), "8807c206");
+    }
+
+    #[test]
+    fn short_member_id_handles_apache_kafka_format() {
+        assert_eq!(
+            short_member_id("consumer-1-0deea70f-ae67-4847", "consumer-1"),
+            "0deea70f"
+        );
+    }
+
+    #[test]
+    fn short_member_id_without_client_id_uses_whole_id() {
+        assert_eq!(short_member_id("abcdefghijkl", ""), "abcdefgh");
+        assert_eq!(short_member_id("m-1", "other"), "m-1");
+    }
+
+    #[test]
+    fn short_member_id_truncates_by_char() {
+        assert_eq!(short_member_id("ççççççççççç", ""), "çççççççç");
     }
 }
