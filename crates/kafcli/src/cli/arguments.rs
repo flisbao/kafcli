@@ -114,6 +114,7 @@ Notes:
     #[command(after_help = r#"Examples:
   kafcli lag --group pedidos-service --topic pedidos --max-lag 1000
   kafcli lag --all-groups --sort lag --top 20
+  kafcli lag --all-groups --detail topic
   kafcli lag --group pedidos-service --output json
   kafcli lag --group pedidos-service --watch 5s
 

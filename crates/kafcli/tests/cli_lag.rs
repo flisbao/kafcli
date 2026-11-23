@@ -83,3 +83,13 @@ fn lag_rejects_zero_watch_interval() {
             "watch interval must be 1s to 3600s, like 5s or 1m",
         ));
 }
+
+#[test]
+fn lag_rejects_unknown_detail() {
+    let directory = tempfile::tempdir().unwrap();
+    build_kafcli_command(directory.path())
+        .args(["lag", "--all-groups", "--detail", "row"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value 'row'"));
+}

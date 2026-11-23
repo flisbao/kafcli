@@ -150,6 +150,8 @@ kafcli schema check-compat --subject orders-value --schema-file order-v2.avsc
 ```sh
 kafcli lag --group orders-service
 kafcli lag --all-groups --sort lag --top 20
+kafcli lag --all-groups --detail topic           # which topic of each group lags
+kafcli lag --group orders-service --detail partition
 kafcli lag --group orders-service --watch 5s
 kafcli lag --group orders-service --topic orders --max-lag 1000   # exits 2 above the limit
 

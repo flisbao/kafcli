@@ -38,7 +38,7 @@ O ADR 0001 é provisório para o Event Hubs. `ListGroups` e `DescribeGroups` est
 - Com offset commitado `c` ≥ 0: `lag = max(0, log_end - c)`.
 - Sem offset commitado (membro novo, `auto.offset.reset` ainda não aplicado): `committed_offset` e `lag` são `null` no JSON e `-` na tabela, e a partição fica fora dos totais. É o mesmo comportamento do `kafka-consumer-groups.sh`.
 - Total de tópico e de grupo = soma dos lags não nulos.
-- A tabela do `lag` usa as colunas do `kafka-consumer-groups.sh --describe` e fecha cada grupo com `TOTAL <grupo> <lag>`, mais `(no active members)` quando é o caso.
+- A tabela do `lag` tem três níveis (`--detail`): `group` (padrão com `--all-groups`), uma linha por grupo; `topic`, uma linha por grupo e tópico; e `partition` (padrão com `--group`), com as colunas do `kafka-consumer-groups.sh --describe`, exceto que `CONSUMER-ID` vira `MEMBER` (8 primeiros caracteres do sufixo depois do client id), fechando cada grupo com `TOTAL <grupo> <lag>`, mais `(no active members)` quando é o caso. A comparação com a ferramenta oficial usa `--output json`, que não depende do nível. Alterado em 2026-11-23.
 
 ### Decodificação do protocolo consumer
 

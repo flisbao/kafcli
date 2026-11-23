@@ -1,9 +1,10 @@
+use crate::cli::lag_arguments::LagDetail;
 use crate::output::output_format::OutputFormat;
 use crate::output::renderer::{TableRenderable, render_json_line};
 use crate::output::terminal_text::sanitize_for_terminal;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, Table};
-use kafcli_core::ops::groups::group_lag::{GroupLag, PartitionLag, UnreadableGroup};
+use kafcli_core::ops::groups::group_lag::{GroupLag, PartitionLag, TopicLag, UnreadableGroup};
 use kafcli_core::ops::groups::lag_trend::{GroupLagChange, LagTrend};
 use serde::Serialize;
 
@@ -17,6 +18,9 @@ pub struct LagView {
     pub unreadable_groups: Vec<UnreadableGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changes: Option<Vec<GroupLagChange>>,
+    /// Level of the table; the JSON always carries every level.
+    #[serde(skip)]
+    pub detail: LagDetail,
 }
 
 /// One `--watch` frame. JSON is one NDJSON line; a table clears the screen first only on a terminal,
@@ -47,41 +51,124 @@ const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
 const NULL_CELL: &str = "-";
 
 impl TableRenderable for LagView {
-    /// One table per group with the columns of `kafka-consumer-groups.sh --describe`, each followed
-    /// by its `TOTAL` line.
+    /// The table of `detail`, followed by the `--watch` changes when there are any.
     fn render_table(&self) -> String {
         if self.groups.is_empty() {
             return "no consumer groups found".to_owned();
         }
-        let mut sections = Vec::with_capacity(self.groups.len());
-        for group in &self.groups {
-            let mut section = String::new();
-            let partitions: Vec<&PartitionLag> = group
-                .topics
-                .iter()
-                .flat_map(|topic| topic.partitions.iter())
-                .collect();
-            if !partitions.is_empty() {
-                section.push_str(&render_group_table(&group.group, &partitions));
-                section.push('\n');
-            }
-            section.push_str(&format!(
-                "TOTAL {} {}",
-                sanitize_for_terminal(&group.group),
-                group.total_lag
-            ));
-            if !group.has_active_members {
-                section.push_str(" (no active members)");
-            }
-            sections.push(section);
-        }
-        let mut rendered = sections.join("\n\n");
+        let mut rendered = match self.detail {
+            LagDetail::Group => render_groups_table(&self.groups),
+            LagDetail::Topic => render_topics_table(&self.groups),
+            LagDetail::Partition => render_partition_sections(&self.groups),
+        };
         if let Some(changes) = self.changes.as_ref().filter(|changes| !changes.is_empty()) {
             rendered.push_str("\n\n");
             rendered.push_str(&render_changes_table(changes));
         }
         rendered
     }
+}
+
+/// One line per group.
+fn render_groups_table(groups: &[GroupLag]) -> String {
+    let mut table = Table::new();
+    *table.style_mut() = UTF8_FULL_CONDENSED;
+    table.set_header(vec![
+        Cell::new("GROUP"),
+        Cell::new("STATE"),
+        Cell::new("TOPICS"),
+        Cell::new("PARTITIONS"),
+        Cell::new("LAG"),
+        Cell::new("MEMBERS"),
+    ]);
+    for group in groups {
+        let partitions: usize = group
+            .topics
+            .iter()
+            .map(|topic| topic.partitions.len())
+            .sum();
+        table.add_row(vec![
+            Cell::new(sanitize_for_terminal(&group.group)),
+            Cell::new(sanitize_for_terminal(&group.state)),
+            Cell::new(group.topics.len()),
+            Cell::new(partitions),
+            Cell::new(group.total_lag),
+            Cell::new(group.member_count),
+        ]);
+    }
+    table.to_string()
+}
+
+/// One line per group and topic, topics by lag (highest first) then name. A group with no topic
+/// keeps one line, so `--top` still shows every group it kept.
+fn render_topics_table(groups: &[GroupLag]) -> String {
+    let mut table = Table::new();
+    *table.style_mut() = UTF8_FULL_CONDENSED;
+    table.set_header(vec![
+        Cell::new("GROUP"),
+        Cell::new("TOPIC"),
+        Cell::new("PARTITIONS"),
+        Cell::new("LAG"),
+        Cell::new("MEMBERS"),
+    ]);
+    for group in groups {
+        let name = sanitize_for_terminal(&group.group);
+        if group.topics.is_empty() {
+            table.add_row(vec![
+                Cell::new(&name),
+                Cell::new(NULL_CELL),
+                Cell::new(0),
+                Cell::new(0),
+                Cell::new(group.member_count),
+            ]);
+            continue;
+        }
+        let mut topics: Vec<&TopicLag> = group.topics.iter().collect();
+        topics.sort_by(|left, right| {
+            right
+                .total_lag
+                .cmp(&left.total_lag)
+                .then_with(|| left.topic.cmp(&right.topic))
+        });
+        for topic in topics {
+            table.add_row(vec![
+                Cell::new(&name),
+                Cell::new(sanitize_for_terminal(&topic.topic)),
+                Cell::new(topic.partitions.len()),
+                Cell::new(topic.total_lag),
+                Cell::new(group.member_count),
+            ]);
+        }
+    }
+    table.to_string()
+}
+
+/// One table per group with the columns of `kafka-consumer-groups.sh --describe` (`MEMBER` in place
+/// of `CONSUMER-ID`), each followed by its `TOTAL` line.
+fn render_partition_sections(groups: &[GroupLag]) -> String {
+    let mut sections = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut section = String::new();
+        let partitions: Vec<&PartitionLag> = group
+            .topics
+            .iter()
+            .flat_map(|topic| topic.partitions.iter())
+            .collect();
+        if !partitions.is_empty() {
+            section.push_str(&render_group_table(&group.group, &partitions));
+            section.push('\n');
+        }
+        section.push_str(&format!(
+            "TOTAL {} {}",
+            sanitize_for_terminal(&group.group),
+            group.total_lag
+        ));
+        if !group.has_active_members {
+            section.push_str(" (no active members)");
+        }
+        sections.push(section);
+    }
+    sections.join("\n\n")
 }
 
 fn render_changes_table(changes: &[GroupLagChange]) -> String {
@@ -220,6 +307,7 @@ mod tests {
             warnings: Vec::new(),
             unreadable_groups: Vec::new(),
             changes: None,
+            detail: LagDetail::Partition,
         }
     }
 
@@ -379,5 +467,154 @@ mod tests {
     #[test]
     fn short_member_id_truncates_by_char() {
         assert_eq!(short_member_id("ççççççççççç", ""), "çççççççç");
+    }
+
+    fn topic_lag(topic: &str, lags: &[i64]) -> TopicLag {
+        TopicLag {
+            topic: topic.to_owned(),
+            total_lag: lags.iter().sum(),
+            partitions: (0..)
+                .zip(lags)
+                .map(|(partition, lag)| PartitionLag {
+                    topic: topic.to_owned(),
+                    partition,
+                    committed_offset: Some(100 - lag),
+                    log_start_offset: 0,
+                    log_end_offset: 100,
+                    lag: Some(*lag),
+                    member: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn group_lag(name: &str, state: &str, member_count: usize, topics: Vec<TopicLag>) -> GroupLag {
+        GroupLag {
+            group: name.to_owned(),
+            state: state.to_owned(),
+            has_active_members: member_count > 0,
+            member_count,
+            total_lag: topics.iter().map(|topic| topic.total_lag).sum(),
+            topics,
+        }
+    }
+
+    fn two_group_view(detail: LagDetail) -> LagView {
+        LagView {
+            groups: vec![
+                group_lag(
+                    "a",
+                    "Stable",
+                    3,
+                    vec![topic_lag("y", &[0]), topic_lag("x", &[2, 3])],
+                ),
+                group_lag("b", "Empty", 0, Vec::new()),
+            ],
+            warnings: Vec::new(),
+            unreadable_groups: Vec::new(),
+            changes: None,
+            detail,
+        }
+    }
+
+    /// The trimmed cells of the first table row whose first cell is `first`.
+    fn row_cells(table: &str, first: &str) -> Vec<String> {
+        table
+            .lines()
+            .map(|line| {
+                line.trim_matches(|c: char| c == '│' || c.is_whitespace())
+                    .split('┆')
+                    .map(|cell| cell.trim().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .find(|cells| cells.first().is_some_and(|cell| cell == first))
+            .unwrap_or_else(|| panic!("no row starting with {first}: {table}"))
+    }
+
+    fn rows_starting_with(table: &str, first: &str) -> Vec<Vec<String>> {
+        table
+            .lines()
+            .map(|line| {
+                line.trim_matches(|c: char| c == '│' || c.is_whitespace())
+                    .split('┆')
+                    .map(|cell| cell.trim().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|cells| cells.first().is_some_and(|cell| cell == first))
+            .collect()
+    }
+
+    #[test]
+    fn group_detail_has_one_row_per_group() {
+        let table = two_group_view(LagDetail::Group).render_table();
+
+        assert_eq!(
+            row_cells(&table, "GROUP"),
+            ["GROUP", "STATE", "TOPICS", "PARTITIONS", "LAG", "MEMBERS"]
+        );
+        assert_eq!(row_cells(&table, "a"), ["a", "Stable", "2", "3", "5", "3"]);
+        assert_eq!(row_cells(&table, "b"), ["b", "Empty", "0", "0", "0", "0"]);
+        assert!(!table.contains("TOTAL"), "{table}");
+        assert!(!table.contains("PARTITION "), "{table}");
+    }
+
+    #[test]
+    fn topic_detail_orders_topics_by_lag() {
+        let table = two_group_view(LagDetail::Topic).render_table();
+
+        assert_eq!(
+            row_cells(&table, "GROUP"),
+            ["GROUP", "TOPIC", "PARTITIONS", "LAG", "MEMBERS"]
+        );
+        assert_eq!(
+            rows_starting_with(&table, "a"),
+            [["a", "x", "2", "5", "3"], ["a", "y", "1", "0", "3"]]
+        );
+        assert_eq!(rows_starting_with(&table, "b"), [["b", "-", "0", "0", "0"]]);
+    }
+
+    #[test]
+    fn topic_detail_ties_order_by_name() {
+        let mut view = two_group_view(LagDetail::Topic);
+        view.groups[0].topics = vec![topic_lag("q", &[4]), topic_lag("p", &[4])];
+
+        let table = view.render_table();
+
+        let topics: Vec<String> = rows_starting_with(&table, "a")
+            .into_iter()
+            .map(|cells| cells[1].clone())
+            .collect();
+        assert_eq!(topics, ["p", "q"]);
+    }
+
+    #[test]
+    fn partition_detail_keeps_total_lines() {
+        let table = two_group_view(LagDetail::Partition).render_table();
+
+        assert!(table.contains("TOTAL a 5"), "{table}");
+        assert!(table.contains("TOTAL b 0 (no active members)"), "{table}");
+    }
+
+    #[test]
+    fn watch_frame_appends_changes_at_group_detail() {
+        let mut view = two_group_view(LagDetail::Group);
+        view.changes = Some(vec![GroupLagChange {
+            group: "a".to_owned(),
+            consumed_per_second: Some(1.0),
+            lag_delta: 2,
+            trend: LagTrend::Rising,
+        }]);
+
+        let frame = render_watch_frame(&view, OutputFormat::Table, false).unwrap();
+
+        assert!(frame.contains("MEMBERS"), "{frame}");
+        assert!(frame.contains("CONSUMED/S"), "{frame}");
+    }
+
+    #[test]
+    fn json_ignores_detail() {
+        let json = serde_json::to_value(two_group_view(LagDetail::Topic)).unwrap();
+
+        assert!(json.get("detail").is_none(), "{json}");
     }
 }
