@@ -248,16 +248,23 @@ const SHORT_MEMBER_ID_LENGTH: usize = 8;
 ///
 /// Kafka builds member ids as `<client-id>-<uuid>`, and Azure Event Hubs adds a
 /// `<namespace>:c:<group>:I:` prefix, so the text after the last `<client-id>-` is the unique part.
-/// Instances often share a client id, so the client id alone does not identify them.
+/// Instances often share a client id, so the client id alone does not identify them. When that
+/// text is missing (static members use `<group.instance.id>-<uuid>`), the end of the id is kept,
+/// because the uuid is at the end and the start is often shared.
 fn short_member_id(member_id: &str, client_id: &str) -> String {
-    let unique = if client_id.is_empty() {
-        member_id
-    } else {
-        member_id
-            .rsplit_once(&format!("{client_id}-"))
-            .map_or(member_id, |(_, suffix)| suffix)
+    let after_client_id = (!client_id.is_empty())
+        .then(|| member_id.rsplit_once(&format!("{client_id}-")))
+        .flatten()
+        .map(|(_, suffix)| suffix)
+        .filter(|suffix| !suffix.is_empty());
+    let short: String = match after_client_id {
+        Some(suffix) => suffix.chars().take(SHORT_MEMBER_ID_LENGTH).collect(),
+        None => {
+            let characters: Vec<char> = member_id.chars().collect();
+            let start = characters.len().saturating_sub(SHORT_MEMBER_ID_LENGTH);
+            characters[start..].iter().collect()
+        }
     };
-    let short: String = unique.chars().take(SHORT_MEMBER_ID_LENGTH).collect();
     sanitize_for_terminal(&short)
 }
 
@@ -459,14 +466,36 @@ mod tests {
     }
 
     #[test]
-    fn short_member_id_without_client_id_uses_whole_id() {
-        assert_eq!(short_member_id("abcdefghijkl", ""), "abcdefgh");
+    fn short_member_id_without_client_id_keeps_the_end() {
+        assert_eq!(short_member_id("abcdefghijkl", ""), "efghijkl");
         assert_eq!(short_member_id("m-1", "other"), "m-1");
     }
 
     #[test]
+    fn short_member_id_tells_static_members_apart() {
+        let first = short_member_id(
+            "orders-service-0-0deea70f-ae67-4847-80d5-22cf41108714",
+            "consumer-1",
+        );
+        let second = short_member_id(
+            "orders-service-1-9a1b2c3d-1111-2222-3333-444455556666",
+            "consumer-1",
+        );
+        assert_eq!(first, "41108714");
+        assert_eq!(second, "55556666");
+    }
+
+    #[test]
+    fn short_member_id_with_empty_suffix_keeps_the_end() {
+        assert_eq!(
+            short_member_id("evh:c:g:I:consumer-1-", "consumer-1"),
+            "sumer-1-"
+        );
+    }
+
+    #[test]
     fn short_member_id_truncates_by_char() {
-        assert_eq!(short_member_id("ççççççççççç", ""), "çççççççç");
+        assert_eq!(short_member_id("açççççççç", ""), "çççççççç");
     }
 
     fn topic_lag(topic: &str, lags: &[i64]) -> TopicLag {
