@@ -23,14 +23,14 @@ curl -fsSL https://raw.githubusercontent.com/flisbao/kafcli/main/scripts/install
 To install a specific version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/flisbao/kafcli/main/scripts/install.sh | KAFCLI_VERSION=0.0.2 bash
+curl -fsSL https://raw.githubusercontent.com/flisbao/kafcli/main/scripts/install.sh | KAFCLI_VERSION=0.0.3 bash
 ```
 
 Or download the package yourself and install it:
 
 ```sh
-curl -fsSLO https://github.com/flisbao/kafcli/releases/download/v0.0.2/kafcli_0.0.2_amd64.deb
-sudo apt install ./kafcli_0.0.2_amd64.deb
+curl -fsSLO https://github.com/flisbao/kafcli/releases/download/v0.0.3/kafcli_0.0.3_amd64.deb
+sudo apt install ./kafcli_0.0.3_amd64.deb
 ```
 
 The binary is statically linked, so the package has no runtime dependencies. Remove it with
@@ -161,6 +161,10 @@ kafcli offsets show --group orders-service --output json
 
 All of these only read: they never join a group or commit offsets.
 
+Since 0.0.3, `kafcli lag --all-groups` prints one line per group by default. Scripts that read the
+per-partition tables or the `TOTAL <group> <lag>` lines should pass `--detail partition`, or read
+`--output json`, which does not depend on `--detail`.
+
 ### Offsets and poison messages
 
 Destructive commands are dry-run by default. With `--execute`, kafcli checks that the group has
@@ -217,8 +221,8 @@ Releases are built by `.github/workflows/release.yml` when a version tag is push
 match the version in `Cargo.toml`:
 
 ```sh
-git tag v0.0.2
-git push origin v0.0.2
+git tag v0.0.3
+git push origin v0.0.3
 ```
 
 The workflow builds the Linux (musl, static) and macOS binaries, the `.deb`, installs the `.deb`
