@@ -91,7 +91,7 @@ impl ClusterOffsetsReader for KafkaClusterReader {
             .metadata_consumer
             .fetch_group_list(group, self.timeout)
             .map_err(|error| self.map_error(operation, group, &error))?;
-        Ok(list
+        let groups = list
             .groups()
             .iter()
             .filter(|info| !(info.state() == DEAD_GROUP_STATE && info.members().is_empty()))
@@ -108,7 +108,8 @@ impl ClusterOffsetsReader for KafkaClusterReader {
                         .collect(),
                 }
             })
-            .collect())
+            .collect();
+        Ok(keep_most_complete_answer_of_each_group(groups))
     }
 
     fn list_topic_partitions(&self, topic: Option<&str>) -> CoreResult<BTreeMap<String, Vec<i32>>> {
@@ -230,6 +231,32 @@ impl ClusterOffsetsReader for KafkaClusterReader {
     }
 }
 
+/// Keeps one answer per group name, in the order the names first appear.
+///
+/// librdkafka asks every broker for its groups. Azure Event Hubs advertises several brokers that
+/// each return the whole namespace, so without this every group would appear once per broker. The
+/// answers can disagree (one broker may still see the group `Empty`), so the one with the most
+/// members wins, and the first of those on a tie: reading an active group as empty would weaken
+/// the checks that guard offset resets.
+fn keep_most_complete_answer_of_each_group(groups: Vec<GroupDescription>) -> Vec<GroupDescription> {
+    let mut kept: Vec<GroupDescription> = Vec::with_capacity(groups.len());
+    let mut index_by_name: BTreeMap<String, usize> = BTreeMap::new();
+    for group in groups {
+        match index_by_name.get(&group.name) {
+            Some(&index) => {
+                if group.members.len() > kept[index].members.len() {
+                    kept[index] = group;
+                }
+            }
+            None => {
+                index_by_name.insert(group.name.clone(), kept.len());
+                kept.push(group);
+            }
+        }
+    }
+    kept
+}
+
 /// Decodes one member. Unreadable metadata leaves the field `None` and logs a warning that names
 /// the member but never carries the bytes.
 fn describe_member(group: &str, member: &GroupMemberInfo, decodes_members: bool) -> GroupMember {
@@ -332,5 +359,54 @@ mod tests {
 
         assert_eq!(polls.get(), 4);
         assert!(clock.get() >= start + Duration::from_secs(1));
+    }
+
+    fn description(name: &str, state: &str) -> GroupDescription {
+        GroupDescription {
+            name: name.to_owned(),
+            state: state.to_owned(),
+            protocol_type: "consumer".to_owned(),
+            members: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn groups_listed_by_several_brokers_are_kept_once() {
+        // Azure Event Hubs answers ListGroups on every advertised broker with the whole list.
+        let listed = vec![
+            description("b", "Stable"),
+            description("a", "Stable"),
+            description("b", "Empty"),
+            description("a", "Stable"),
+            description("b", "Stable"),
+        ];
+
+        let kept = keep_most_complete_answer_of_each_group(listed);
+
+        let kept: Vec<(&str, &str)> = kept
+            .iter()
+            .map(|group| (group.name.as_str(), group.state.as_str()))
+            .collect();
+        assert_eq!(kept, vec![("b", "Stable"), ("a", "Stable")]);
+    }
+
+    #[test]
+    fn repeated_group_keeps_the_answer_with_members() {
+        let member = GroupMember {
+            member_id: "consumer-1-abc".to_owned(),
+            client_id: "consumer-1".to_owned(),
+            host: "/10.0.0.7".to_owned(),
+            subscription: None,
+            assignment: None,
+        };
+        let mut active = description("a", "Stable");
+        active.members = vec![member.clone(), member];
+        let listed = vec![description("a", "Empty"), active, description("a", "Empty")];
+
+        let kept = keep_most_complete_answer_of_each_group(listed);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].state, "Stable");
+        assert_eq!(kept[0].members.len(), 2);
     }
 }

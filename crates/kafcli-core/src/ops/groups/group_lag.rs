@@ -54,6 +54,8 @@ pub struct GroupLag {
     pub group: String,
     pub state: String,
     pub has_active_members: bool,
+    /// Members of the group, counting those with no assigned partition.
+    pub member_count: usize,
     pub total_lag: i64,
     pub topics: Vec<TopicLag>,
 }
@@ -376,6 +378,7 @@ fn compute_group_lag(
         group: description.name.clone(),
         state: description.state.clone(),
         has_active_members: !description.members.is_empty(),
+        member_count: description.members.len(),
         total_lag: topics.iter().map(|topic| topic.total_lag).sum(),
         topics,
     })
@@ -477,6 +480,22 @@ mod tests {
             group: Some(name.to_owned()),
             topic: None,
         }
+    }
+
+    #[test]
+    fn member_count_includes_members_without_partitions() {
+        let mut reader = reader_with_topic("t", &[100]);
+        reader.groups.push(group(
+            "g",
+            vec![member("m1", "t", &[0]), member("m2", "t", &[])],
+        ));
+        commit(&mut reader, "g", "t", 0, 40);
+
+        let report = collect_group_lag(&reader, &request_group("g")).unwrap();
+
+        assert_eq!(report.groups[0].member_count, 2);
+        let json = serde_json::to_value(&report.groups[0]).unwrap();
+        assert_eq!(json["member_count"], 2);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::cli::lag_arguments::{LagArguments, LagSortOrder};
+use crate::cli::lag_arguments::{LagArguments, LagDetail, LagSortOrder};
 use crate::commands::cluster_reader_connection::connect_cluster_reader;
 use crate::execution_context::ExecutionContext;
 use crate::output::collection_warnings::write_collection_warnings;
@@ -60,6 +60,7 @@ pub fn lag(
         warnings: report.warnings,
         unreadable_groups: report.unreadable_groups,
         changes: None,
+        detail: resolve_detail(arguments),
     };
     Ok(RenderedOutput {
         text: Some(render_output(&view, output_format)?),
@@ -105,6 +106,7 @@ fn watch_lag(
             warnings: report.warnings,
             unreadable_groups: report.unreadable_groups,
             changes: Some(changes),
+            detail: resolve_detail(arguments),
         };
         let frame = render_watch_frame(&view, output_format, is_terminal)?;
         match write_frame(&frame) {
@@ -130,6 +132,16 @@ fn watch_lag(
         ));
         reader.wait_serving_client_events(interval);
     }
+}
+
+/// The table level: `--detail` when given, else `partition` for `--group` and `group` for
+/// `--all-groups`.
+pub fn resolve_detail(arguments: &LagArguments) -> LagDetail {
+    arguments.detail.unwrap_or(if arguments.group.is_some() {
+        LagDetail::Partition
+    } else {
+        LagDetail::Group
+    })
 }
 
 fn write_frame(frame: &str) -> io::Result<()> {
@@ -203,11 +215,51 @@ mod tests {
     use super::*;
     use kafcli_core::ops::groups::group_lag::GroupLag;
 
+    fn arguments(group: Option<&str>, detail: Option<LagDetail>) -> LagArguments {
+        LagArguments {
+            group: group.map(str::to_owned),
+            all_groups: group.is_none(),
+            topic: None,
+            sort: LagSortOrder::Lag,
+            top: None,
+            max_lag: None,
+            watch: None,
+            timeout_seconds: 10,
+            detail,
+        }
+    }
+
+    #[test]
+    fn detail_defaults_to_group_for_all_groups() {
+        assert_eq!(resolve_detail(&arguments(None, None)), LagDetail::Group);
+    }
+
+    #[test]
+    fn detail_defaults_to_partition_for_one_group() {
+        assert_eq!(
+            resolve_detail(&arguments(Some("g"), None)),
+            LagDetail::Partition
+        );
+    }
+
+    #[test]
+    fn explicit_detail_wins() {
+        assert_eq!(
+            resolve_detail(&arguments(None, Some(LagDetail::Topic))),
+            LagDetail::Topic
+        );
+        assert_eq!(
+            resolve_detail(&arguments(Some("g"), Some(LagDetail::Group))),
+            LagDetail::Group
+        );
+    }
+
     fn group(name: &str, total_lag: i64) -> GroupLag {
         GroupLag {
             group: name.to_owned(),
             state: "Stable".to_owned(),
             has_active_members: true,
+            member_count: 1,
             total_lag,
             topics: Vec::new(),
         }

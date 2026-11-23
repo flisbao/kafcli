@@ -10,6 +10,17 @@ pub enum LagSortOrder {
     Group,
 }
 
+/// How much of each group `kafcli lag` shows in a table.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LagDetail {
+    /// One line per group.
+    Group,
+    /// One line per group and topic.
+    Topic,
+    /// One line per partition, with the member that reads it.
+    Partition,
+}
+
 #[derive(clap::Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("target")
@@ -29,6 +40,10 @@ pub struct LagArguments {
     /// Order of the groups in the result.
     #[arg(long, value_enum, default_value_t = LagSortOrder::Lag)]
     pub sort: LagSortOrder,
+    /// Level of the table: one line per group, per topic or per partition. Defaults to group with
+    /// --all-groups and partition with --group.
+    #[arg(long, value_enum)]
+    pub detail: Option<LagDetail>,
     /// Keeps only the first N groups, after --sort.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10_000))]
     pub top: Option<u32>,
