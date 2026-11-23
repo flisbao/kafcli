@@ -208,6 +208,7 @@ mod tests {
             group: name.to_owned(),
             state: "Stable".to_owned(),
             has_active_members: true,
+            member_count: 1,
             total_lag,
             topics: Vec::new(),
         }

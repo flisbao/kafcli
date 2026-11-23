@@ -98,6 +98,7 @@ mod tests {
             group: "pedidos-service".to_owned(),
             state: "Empty".to_owned(),
             has_active_members: false,
+            member_count: 0,
             total_lag: 7,
             topics: vec![TopicLag {
                 topic: "pedidos".to_owned(),

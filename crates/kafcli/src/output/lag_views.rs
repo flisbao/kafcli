@@ -189,6 +189,7 @@ mod tests {
                 group: "pedidos-service".to_owned(),
                 state: "Stable".to_owned(),
                 has_active_members,
+                member_count: usize::from(has_active_members),
                 total_lag,
                 topics: vec![TopicLag {
                     topic: "pedidos".to_owned(),
