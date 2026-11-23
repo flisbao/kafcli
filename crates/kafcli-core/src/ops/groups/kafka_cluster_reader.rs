@@ -1,6 +1,6 @@
 //! `ClusterOffsetsReader` backed by librdkafka consumers that never join, assign or commit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use rdkafka::ClientConfig;
@@ -91,7 +91,7 @@ impl ClusterOffsetsReader for KafkaClusterReader {
             .metadata_consumer
             .fetch_group_list(group, self.timeout)
             .map_err(|error| self.map_error(operation, group, &error))?;
-        Ok(list
+        let groups = list
             .groups()
             .iter()
             .filter(|info| !(info.state() == DEAD_GROUP_STATE && info.members().is_empty()))
@@ -108,7 +108,8 @@ impl ClusterOffsetsReader for KafkaClusterReader {
                         .collect(),
                 }
             })
-            .collect())
+            .collect();
+        Ok(keep_first_of_each_group(groups))
     }
 
     fn list_topic_partitions(&self, topic: Option<&str>) -> CoreResult<BTreeMap<String, Vec<i32>>> {
@@ -232,6 +233,18 @@ impl ClusterOffsetsReader for KafkaClusterReader {
 
 /// Decodes one member. Unreadable metadata leaves the field `None` and logs a warning that names
 /// the member but never carries the bytes.
+/// Drops repeated group names, keeping the first answer for each and the original order.
+///
+/// librdkafka asks every broker for its groups. Azure Event Hubs advertises several brokers that
+/// each return the whole namespace, so without this every group would appear once per broker.
+fn keep_first_of_each_group(groups: Vec<GroupDescription>) -> Vec<GroupDescription> {
+    let mut seen = BTreeSet::new();
+    groups
+        .into_iter()
+        .filter(|group| seen.insert(group.name.clone()))
+        .collect()
+}
+
 fn describe_member(group: &str, member: &GroupMemberInfo, decodes_members: bool) -> GroupMember {
     let readable =
         |bytes: Option<&[u8]>| bytes.is_some_and(|bytes| !bytes.is_empty()) && decodes_members;
@@ -332,5 +345,34 @@ mod tests {
 
         assert_eq!(polls.get(), 4);
         assert!(clock.get() >= start + Duration::from_secs(1));
+    }
+
+    fn description(name: &str, state: &str) -> GroupDescription {
+        GroupDescription {
+            name: name.to_owned(),
+            state: state.to_owned(),
+            protocol_type: "consumer".to_owned(),
+            members: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn groups_listed_by_several_brokers_are_kept_once() {
+        // Azure Event Hubs answers ListGroups on every advertised broker with the whole list.
+        let listed = vec![
+            description("b", "Stable"),
+            description("a", "Stable"),
+            description("b", "Empty"),
+            description("a", "Stable"),
+            description("b", "Stable"),
+        ];
+
+        let kept = keep_first_of_each_group(listed);
+
+        let kept: Vec<(&str, &str)> = kept
+            .iter()
+            .map(|group| (group.name.as_str(), group.state.as_str()))
+            .collect();
+        assert_eq!(kept, vec![("b", "Stable"), ("a", "Stable")]);
     }
 }
