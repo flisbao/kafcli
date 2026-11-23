@@ -1,6 +1,6 @@
 //! `ClusterOffsetsReader` backed by librdkafka consumers that never join, assign or commit.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use rdkafka::ClientConfig;
@@ -109,7 +109,7 @@ impl ClusterOffsetsReader for KafkaClusterReader {
                 }
             })
             .collect();
-        Ok(keep_first_of_each_group(groups))
+        Ok(keep_most_complete_answer_of_each_group(groups))
     }
 
     fn list_topic_partitions(&self, topic: Option<&str>) -> CoreResult<BTreeMap<String, Vec<i32>>> {
@@ -231,20 +231,34 @@ impl ClusterOffsetsReader for KafkaClusterReader {
     }
 }
 
-/// Decodes one member. Unreadable metadata leaves the field `None` and logs a warning that names
-/// the member but never carries the bytes.
-/// Drops repeated group names, keeping the first answer for each and the original order.
+/// Keeps one answer per group name, in the order the names first appear.
 ///
 /// librdkafka asks every broker for its groups. Azure Event Hubs advertises several brokers that
-/// each return the whole namespace, so without this every group would appear once per broker.
-fn keep_first_of_each_group(groups: Vec<GroupDescription>) -> Vec<GroupDescription> {
-    let mut seen = BTreeSet::new();
-    groups
-        .into_iter()
-        .filter(|group| seen.insert(group.name.clone()))
-        .collect()
+/// each return the whole namespace, so without this every group would appear once per broker. The
+/// answers can disagree (one broker may still see the group `Empty`), so the one with the most
+/// members wins, and the first of those on a tie: reading an active group as empty would weaken
+/// the checks that guard offset resets.
+fn keep_most_complete_answer_of_each_group(groups: Vec<GroupDescription>) -> Vec<GroupDescription> {
+    let mut kept: Vec<GroupDescription> = Vec::with_capacity(groups.len());
+    let mut index_by_name: BTreeMap<String, usize> = BTreeMap::new();
+    for group in groups {
+        match index_by_name.get(&group.name) {
+            Some(&index) => {
+                if group.members.len() > kept[index].members.len() {
+                    kept[index] = group;
+                }
+            }
+            None => {
+                index_by_name.insert(group.name.clone(), kept.len());
+                kept.push(group);
+            }
+        }
+    }
+    kept
 }
 
+/// Decodes one member. Unreadable metadata leaves the field `None` and logs a warning that names
+/// the member but never carries the bytes.
 fn describe_member(group: &str, member: &GroupMemberInfo, decodes_members: bool) -> GroupMember {
     let readable =
         |bytes: Option<&[u8]>| bytes.is_some_and(|bytes| !bytes.is_empty()) && decodes_members;
@@ -367,12 +381,32 @@ mod tests {
             description("b", "Stable"),
         ];
 
-        let kept = keep_first_of_each_group(listed);
+        let kept = keep_most_complete_answer_of_each_group(listed);
 
         let kept: Vec<(&str, &str)> = kept
             .iter()
             .map(|group| (group.name.as_str(), group.state.as_str()))
             .collect();
         assert_eq!(kept, vec![("b", "Stable"), ("a", "Stable")]);
+    }
+
+    #[test]
+    fn repeated_group_keeps_the_answer_with_members() {
+        let member = GroupMember {
+            member_id: "consumer-1-abc".to_owned(),
+            client_id: "consumer-1".to_owned(),
+            host: "/10.0.0.7".to_owned(),
+            subscription: None,
+            assignment: None,
+        };
+        let mut active = description("a", "Stable");
+        active.members = vec![member.clone(), member];
+        let listed = vec![description("a", "Empty"), active, description("a", "Empty")];
+
+        let kept = keep_most_complete_answer_of_each_group(listed);
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].state, "Stable");
+        assert_eq!(kept[0].members.len(), 2);
     }
 }
